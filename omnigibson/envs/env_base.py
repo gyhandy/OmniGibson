@@ -87,7 +87,7 @@ class Environment(gym.Env, GymObservable, Recreatable):
                 modifications to be made without having to specify entire configs during each reload.
         """
         # Convert config file(s) into a single parsed dict
-        configs = [configs] if isinstance(configs, str) else configs
+        configs = [configs] if isinstance(configs, dict) or isinstance(configs, str) else configs
 
         # Initial default config
         new_config = self.default_config
