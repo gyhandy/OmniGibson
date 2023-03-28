@@ -1,6 +1,5 @@
 from collections import defaultdict
 import itertools
-import logging
 import contextlib
 import os
 from pathlib import Path
@@ -25,16 +24,19 @@ from omnigibson.utils.constants import LightingMode
 from omnigibson.utils.config_utils import NumpyEncoder
 from omnigibson.utils.python_utils import clear as clear_pu, create_object_from_init_info, Serializable
 from omnigibson.utils.usd_utils import clear as clear_uu, BoundingBoxAPI, FlatcacheAPI
-from omnigibson.utils.ui_utils import CameraMover, disclaimer
+from omnigibson.utils.ui_utils import CameraMover, disclaimer, create_module_logger, suppress_omni_log
 from omnigibson.scenes import Scene
 from omnigibson.objects.object_base import BaseObject
 from omnigibson.objects.stateful_object import StatefulObject
+from omnigibson.objects.dataset_object import DatasetObject
 from omnigibson.object_states.contact_subscribed_state_mixin import ContactSubscribedStateMixin
 from omnigibson.object_states.factory import get_states_by_dependency_order
 from omnigibson.object_states.update_state_mixin import UpdateStateMixin
 from omnigibson.sensors.vision_sensor import VisionSensor
 from omnigibson.transition_rules import DEFAULT_RULES
 
+# Create module logger
+log = create_module_logger(module_name=__name__)
 
 # Create settings for this module
 m = create_module_macros(module_path=__file__)
@@ -116,9 +118,12 @@ class Simulator(SimulationContext, Serializable):
         self.object_state_types = get_states_by_dependency_order()
         self.object_state_types_requiring_update = \
             [state for state in self.object_state_types if issubclass(state, UpdateStateMixin)]
+        self.object_state_types_on_contact = \
+            [state for state in self.object_state_types if issubclass(state, ContactSubscribedStateMixin)]
 
         # Set of all non-Omniverse transition rules to apply.
         self._transition_rules = DEFAULT_RULES
+        self._transition_object_init_states = dict()    # Maps object to object state to args to pass to state setter
 
         # Toggle simulator state once so that downstream omni features can be used without bugs
         # e.g.: particle sampling, which for some reason requires sim.play() to be called at least once
@@ -167,7 +172,7 @@ class Simulator(SimulationContext, Serializable):
             viewport_name=viewport_name,
         )
         if not self._viewer_camera.loaded:
-            self._viewer_camera.load(simulator=self)
+            self._viewer_camera.load()
 
         # We update its clipping range and focal length so we get a good FOV and so that it doesn't clip
         # nearby objects (default min is 1 m)
@@ -206,6 +211,15 @@ class Simulator(SimulationContext, Serializable):
         self._physics_context.set_gpu_found_lost_aggregate_pairs_capacity(gm.GPU_AGGR_PAIRS_CAPACITY)
         self._physics_context.set_gpu_total_aggregate_pairs_capacity(gm.GPU_AGGR_PAIRS_CAPACITY)
         self._physics_context.set_gpu_max_particle_contacts(gm.GPU_MAX_PARTICLE_CONTACTS)
+
+    def _set_renderer_settings(self):
+        # TODO: For now we are setting these to some reasonable high-performance values but these can be made configurable.
+        carb.settings.get_settings().set_bool("/rtx/reflections/enabled", False)  # Can be True with a 10fps penalty
+        carb.settings.get_settings().set_bool("/rtx/indirectDiffuse/enabled", True)  # Can be False with a 5fps gain
+        carb.settings.get_settings().set_bool("/rtx/directLighting/sampledLighting/enabled", True)
+        carb.settings.get_settings().set_int("/rtx/raytracing/showLights", 1)
+        carb.settings.get_settings().set_float("/rtx/sceneDb/ambientLightIntensity", 0.1)
+        carb.settings.get_settings().set_int("/rtx/domeLight/upperLowerStrategy", 3)  # "Limited image-based"
 
     @property
     def viewer_visibility(self):
@@ -278,6 +292,7 @@ class Simulator(SimulationContext, Serializable):
         """
         self._camera_mover = CameraMover(cam=self._viewer_camera)
         self._camera_mover.print_info()
+        return self._camera_mover
 
     def import_scene(self, scene):
         """
@@ -293,7 +308,7 @@ class Simulator(SimulationContext, Serializable):
         self.clear()
 
         self._scene = scene
-        self._scene.load(self)
+        self._scene.load()
 
         # Make sure simulator is not running, then start it so that we can initialize the scene
         assert self.is_stopped(), "Simulator must be stopped after importing a scene!"
@@ -305,6 +320,7 @@ class Simulator(SimulationContext, Serializable):
         # Need to one more step for particle systems to work
         self.step()
         self.stop()
+        log.info("Imported scene.")
 
     def initialize_object_on_next_sim_step(self, obj):
         """
@@ -331,7 +347,7 @@ class Simulator(SimulationContext, Serializable):
         assert self.scene is not None, "import_object needs to be called after import_scene"
 
         # Load the object in omniverse by adding it to the scene
-        self.scene.add_object(obj, self, register=register, _is_call_from_simulator=True)
+        self.scene.add_object(obj, register=register, _is_call_from_simulator=True)
 
         # Lastly, additionally add this object automatically to be initialized as soon as another simulator step occurs
         # if requested
@@ -345,7 +361,7 @@ class Simulator(SimulationContext, Serializable):
         Args:
             obj (BaseObject): a non-robot object to load
         """
-        self._scene.remove_object(obj, simulator=self)
+        self._scene.remove_object(obj)
         self.app.update()
 
     def _non_physics_step(self):
@@ -358,19 +374,9 @@ class Simulator(SimulationContext, Serializable):
             for obj in self._objects_to_initialize:
                 obj.initialize()
             self._objects_to_initialize = []
-            # Also update the scene registry
-            # TODO: A better place to put this perhaps?
-            self._scene.object_registry.update(keys="root_handle")
 
         # Propagate states if the feature is enabled
         if gm.ENABLE_OBJECT_STATES:
-
-            # Cache values from all of the micro and macro particle systems.
-            # This is used to store system-wide state which can be queried
-            # by the object state system.
-            for system in self.scene.systems:
-                system.cache()
-
             # Step the object states in global topological order (if the scene exists).
             if self.scene is not None:
                 for state_type in self.object_state_types_requiring_update:
@@ -378,12 +384,6 @@ class Simulator(SimulationContext, Serializable):
                         # Only update objects that have been initialized so far
                         if obj.initialized:
                             obj.states[state_type].update()
-
-            # Perform system level updates to the micro and macro particle systems.
-            # This allows for the states to handle changes in response to changes
-            # induced by the object state system.
-            for system in self.scene.systems:
-                system.update()
 
             for obj in self.scene.objects:
                 # Only update visuals for objects that have been initialized so far
@@ -401,6 +401,12 @@ class Simulator(SimulationContext, Serializable):
         """
         Applies all internal non-Omniverse transition rules.
         """
+        # Apply any transiiton object init states from before, and then clear the dictionary
+        for obj, states_info in self._transition_object_init_states.items():
+            for state, args in states_info.items():
+                obj.states[state].set_value(*args)
+        self._transition_object_init_states = dict()
+
         # Create a dict from rule to filter to objects we care about.
         obj_dict = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
         for obj in self.scene.objects:
@@ -473,25 +479,33 @@ class Simulator(SimulationContext, Serializable):
 
         for added_obj_attr in added_obj_attrs:
             new_obj = added_obj_attr.obj
-            self.import_object(added_obj_attr.obj)
-            pos, orn = added_obj_attr.pos, added_obj_attr.orn
-            new_obj.set_position_orientation(position=pos, orientation=orn)
-
-    def reset_scene(self):
-        """
-        Resets ths scene (if it exists) and its corresponding objects
-        """
-        if self.scene is not None and self.scene.initialized:
-            self.scene.reset()
+            self.import_object(new_obj)
+            # By default, added_obj_attr is populated with all Nones -- so these will all be pass-through operations
+            # unless pos / orn (or, conversely, bb_pos / bb_orn) is specified
+            if added_obj_attr.pos is not None or added_obj_attr.orn is not None:
+                new_obj.set_position_orientation(position=added_obj_attr.pos, orientation=added_obj_attr.orn)
+            elif isinstance(new_obj, DatasetObject) and \
+                    (added_obj_attr.bb_pos is not None or added_obj_attr.bb_orn is not None):
+                new_obj.set_bbox_center_position_orientation(position=added_obj_attr.bb_pos, orientation=added_obj_attr.bb_orn)
+            # Additionally record any requested states if specified to be updated during the next transition step
+            if added_obj_attr.states is not None:
+                self._transition_object_init_states[new_obj] = added_obj_attr.states
 
     def play(self):
         if not self.is_playing():
             # Track whether we're starting the simulator fresh -- i.e.: whether we were stopped previously
             was_stopped = self.is_stopped()
 
-            # Minimize physics leakage by slowing down simulator significantly
-            with self.slowed(dt=1e-3):
+            # Run super first
+            # We suppress warnings from omni.usd because it complains about values set in the native USD
+            # These warnings occur because the native USD file has some type mismatch in the `scale` property,
+            # where the property expects a double but for whatever reason the USD interprets its values as floats
+            with suppress_omni_log(channels=["omni.usd"]):
                 super().play()
+
+            # Take a render step -- this is needed so that certain (unknown, maybe omni internal state?) is populated
+            # correctly
+            self.render()
 
             # Update all object handles
             if self.scene is not None and self.scene.initialized:
@@ -500,14 +514,26 @@ class Simulator(SimulationContext, Serializable):
                     if obj.initialized:
                         obj.update_handles()
 
-            # Check to see if any objects should be initialized
-            if len(self._objects_to_initialize) > 0:
-                for obj in self._objects_to_initialize:
-                    obj.initialize()
-                self._objects_to_initialize = []
-                # Also update the scene registry
-                # TODO: A better place to put this perhaps?
-                self._scene.object_registry.update(keys="root_handle")
+
+            if was_stopped:
+                # We need to update controller mode because kp and kd were set to the original (incorrect) values when
+                # sim was stopped. We need to reset them to default_kp and default_kd defined in ControllableObject.
+                # We also need to take an additional sim step to make sure simulator is functioning properly.
+                # We need to do this because for some reason omniverse exhibits strange behavior if we do certain
+                # operations immediately after playing; e.g.: syncing USD poses when flatcache is enabled
+                if self.scene is not None and self.scene.initialized:
+                    for robot in self.scene.robots:
+                        if robot.initialized:
+                            robot.update_controller_mode()
+
+                self.step_physics()
+
+            # Additionally run non physics things if we have a valid scene
+            if self._scene is not None:
+                self._omni_update_step()
+                self._non_physics_step()
+                if gm.ENABLE_TRANSITION_RULES:
+                    self._transition_rule_step()
 
     def pause(self):
         if not self.is_paused():
@@ -576,22 +602,26 @@ class Simulator(SimulationContext, Serializable):
         For each of the pair of objects in each contact, we invoke the on_contact function for each of its states
         that subclass ContactSubscribedStateMixin. These states update based on contact events.
         """
-        for contact_header in contact_headers:
-            actor0 = str(PhysicsSchemaTools.intToSdfPath(contact_header.actor0))
-            actor1 = str(PhysicsSchemaTools.intToSdfPath(contact_header.actor1))
-            # actor0/1 are prim paths for links that are in contact. Find the corresponding objects.
-            actor0_obj = self._scene.object_registry("prim_path", "/".join(actor0.split("/")[:-1]))
-            actor1_obj = self._scene.object_registry("prim_path", "/".join(actor1.split("/")[:-1]))
-            if actor0_obj is None or actor1_obj is None or not actor0_obj.initialized or not actor1_obj.initialized:
-                continue
-
-            for obj0, obj1 in [(actor0_obj, actor1_obj), (actor1_obj, actor0_obj)]:
-                if not isinstance(obj0, StatefulObject):
+        if gm.ENABLE_OBJECT_STATES:
+            combos = set()
+            headers = defaultdict(list)
+            for contact_header in contact_headers:
+                actor0 = str(PhysicsSchemaTools.intToSdfPath(contact_header.actor0))
+                actor1 = str(PhysicsSchemaTools.intToSdfPath(contact_header.actor1))
+                # actor0/1 are prim paths for links that are in contact. Find the corresponding objects.
+                actor0_obj = self._scene.object_registry("prim_path", "/".join(actor0.split("/")[:-1]))
+                actor1_obj = self._scene.object_registry("prim_path", "/".join(actor1.split("/")[:-1]))
+                if actor0_obj is None or actor1_obj is None or not actor0_obj.initialized or not actor1_obj.initialized:
                     continue
-                for state_type in obj0.states:
-                    if not issubclass(state_type, ContactSubscribedStateMixin):
-                        continue
-                    obj0.states[state_type].on_contact(obj1, contact_header, contact_data)
+                headers[tuple(sorted((actor0_obj, actor1_obj), key=lambda x:x.uuid))].append(contact_header)
+
+            for (actor0_obj, actor1_obj) in combos:
+                if not isinstance(actor0_obj, StatefulObject) or not isinstance(actor1_obj, StatefulObject):
+                    continue
+                for obj0, obj1 in [(actor0_obj, actor1_obj), (actor1_obj, actor0_obj)]:
+                    for state_type in self.object_state_types_on_contact:
+                        if state_type in obj0.states:
+                            obj0.states[state_type].on_contact(obj1, headers[(actor0_obj, actor1_obj)], contact_data)
 
     def is_paused(self):
         """
@@ -609,10 +639,10 @@ class Simulator(SimulationContext, Serializable):
         # Infer what state we're currently in, then stop, yield, and then restore the original state
         sim_is_playing, sim_is_paused = self.is_playing(), self.is_paused()
         if sim_is_playing or sim_is_paused:
-            og.sim.stop()
+            self.stop()
         yield
-        if sim_is_playing: og.sim.play()
-        elif sim_is_paused: og.sim.pause()
+        if sim_is_playing: self.play()
+        elif sim_is_paused: self.pause()
 
     @contextlib.contextmanager
     def playing(self):
@@ -623,10 +653,10 @@ class Simulator(SimulationContext, Serializable):
         # Infer what state we're currently in, then stop, yield, and then restore the original state
         sim_is_stopped, sim_is_paused = self.is_stopped(), self.is_paused()
         if sim_is_stopped or sim_is_paused:
-            og.sim.play()
+            self.play()
         yield
-        if sim_is_stopped: og.sim.stop()
-        elif sim_is_paused: og.sim.pause()
+        if sim_is_stopped: self.stop()
+        elif sim_is_paused: self.pause()
 
     @contextlib.contextmanager
     def paused(self):
@@ -637,10 +667,10 @@ class Simulator(SimulationContext, Serializable):
         # Infer what state we're currently in, then stop, yield, and then restore the original state
         sim_is_stopped, sim_is_playing = self.is_stopped(), self.is_playing()
         if sim_is_stopped or sim_is_playing:
-            og.sim.pause()
+            self.pause()
         yield
-        if sim_is_stopped: og.sim.stop()
-        elif sim_is_playing: og.sim.play()
+        if sim_is_stopped: self.stop()
+        elif sim_is_playing: self.play()
 
     @contextlib.contextmanager
     def slowed(self, dt):
@@ -718,6 +748,14 @@ class Simulator(SimulationContext, Serializable):
         return self._viewer_camera
 
     @property
+    def camera_mover(self):
+        """
+        Returns:
+            None or CameraMover: If enabled, the teleoperation interface for controlling the active viewer camera
+        """
+        return self._camera_mover
+
+    @property
     def world_prim(self):
         """
         Returns:
@@ -763,7 +801,7 @@ class Simulator(SimulationContext, Serializable):
                 to recreate a scene.
         """
         if not json_path.endswith(".json"):
-            logging.error(f"You have to define the full json_path to load from. Got: {json_path}")
+            log.error(f"You have to define the full json_path to load from. Got: {json_path}")
             return
 
         # Clear the current stage
@@ -789,7 +827,7 @@ class Simulator(SimulationContext, Serializable):
         self.play()
         self.load_state(state, serialized=False)
 
-        logging.info("The saved simulation environment loaded.")
+        log.info("The saved simulation environment loaded.")
 
         return
 
@@ -807,13 +845,13 @@ class Simulator(SimulationContext, Serializable):
         # Make sure there are no objects in the initialization queue, if not, terminate early and notify user
         # Also run other sanity checks before saving
         if len(self._objects_to_initialize) > 0:
-            logging.error("There are still objects to initialize! Please take one additional sim step and then save.")
+            log.error("There are still objects to initialize! Please take one additional sim step and then save.")
             return
         if not self.scene:
-            logging.warning("Scene has not been loaded. Nothing to save.")
+            log.warning("Scene has not been loaded. Nothing to save.")
             return
         if not json_path.endswith(".json"):
-            logging.error(f"You have to define the full json_path to save the scene to. Got: {json_path}")
+            log.error(f"You have to define the full json_path to save the scene to. Got: {json_path}")
             return
 
         # Update scene info
@@ -831,7 +869,7 @@ class Simulator(SimulationContext, Serializable):
         with open(json_path, "w+") as f:
             json.dump(scene_info, f, cls=NumpyEncoder, indent=4)
 
-        logging.info("The current simulation environment saved.")
+        log.info("The current simulation environment saved.")
 
         return
 
@@ -853,7 +891,7 @@ class Simulator(SimulationContext, Serializable):
         """
         # Stop the physics if we're playing
         if not self.is_stopped():
-            logging.warning("Stopping simulation in order to load stage.")
+            log.warning("Stopping simulation in order to load stage.")
             self.stop()
 
         # Store physics dt and rendering dt to reuse later
@@ -869,7 +907,9 @@ class Simulator(SimulationContext, Serializable):
         # Clear simulation state
         self._clear_state()
 
-        open_stage(usd_path=usd_path)
+        # Open new stage -- suppressing warning that we're opening a new stage
+        with suppress_omni_log(None):
+            open_stage(usd_path=usd_path)
 
         # Re-initialize necessary internal vars
         self._app = omni.kit.app.get_app_interface()
@@ -888,6 +928,7 @@ class Simulator(SimulationContext, Serializable):
             stage_units_in_meters=self._initial_stage_units_in_meters,
         )
         self._set_physics_engine_settings()
+        self._set_renderer_settings()
         self._setup_default_callback_fns()
         self._stage_open_callback = (
             omni.usd.get_context().get_stage_event_stream().create_subscription_to_pop(self._stage_open_callback_fn)
@@ -909,6 +950,14 @@ class Simulator(SimulationContext, Serializable):
         Shuts down the OmniGibson application
         """
         self._app.shutdown()
+
+    @property
+    def stage_id(self):
+        """
+        Returns:
+            int: ID of the current active stage
+        """
+        return UsdUtils.StageCache.Get().GetId(self.stage).ToLongInt()
 
     @property
     def device(self):

@@ -1,5 +1,4 @@
 import itertools
-import logging
 import math
 import os
 import tempfile
@@ -13,12 +12,17 @@ from omni.isaac.core.utils.rotations import gf_quat_to_np_array
 
 import omnigibson as og
 from omnigibson.objects.usd_object import USDObject
+from omnigibson.prims.rigid_prim import RigidPrim
 from omnigibson.utils.constants import AVERAGE_CATEGORY_SPECS, DEFAULT_JOINT_FRICTION, SPECIAL_JOINT_FRICTIONS, JointType
 import omnigibson.utils.transform_utils as T
 from omnigibson.utils.usd_utils import BoundingBoxAPI
 from omnigibson.utils.asset_utils import decrypt_file
 from omnigibson.utils.constants import PrimType
 from omnigibson.macros import gm, create_module_macros
+from omnigibson.utils.ui_utils import create_module_logger
+
+# Create module logger
+log = create_module_logger(module_name=__name__)
 
 
 # Create settings for this module
@@ -37,9 +41,9 @@ class DatasetObject(USDObject):
 
     def __init__(
         self,
-        prim_path,
+        name,
         usd_path=None,
-        name=None,
+        prim_path=None,
         category="object",
         model=None,
         class_id=None,
@@ -61,11 +65,11 @@ class DatasetObject(USDObject):
     ):
         """
         Args:
-            prim_path (str): global path in the stage to this object
+            name (str): Name for the object. Names need to be unique per scene
             usd_path (None or str): If specified, global path to the USD file to load. Note that this will override
                 @category + @model!
-            name (None or str): Name for the object. Names need to be unique per scene. If None, a name will be
-                generated at the time the object is added to the scene, using the object's category.
+            prim_path (None or str): global path in the stage to this object. If not specified, will automatically be
+                created at /World/<name>
             category (str): Category for the object. Defaults to "object".
             model (None or str): if @usd_path is not specified, then this must be specified in conjunction with
                 @category to infer the usd filepath to load for this object, which evaluates to the following:
@@ -205,13 +209,29 @@ class DatasetObject(USDObject):
         # Run super method first
         super()._initialize()
 
+        # Apply any forced light intensity updates.
+        if gm.FORCE_LIGHT_INTENSITY is not None:
+            def recursive_light_update(child_prim):
+                if "Light" in child_prim.GetPrimTypeInfo().GetTypeName():
+                    child_prim.GetAttribute("intensity").Set(gm.FORCE_LIGHT_INTENSITY)
+
+                for child_child_prim in child_prim.GetChildren():
+                    recursive_light_update(child_child_prim)
+
+            recursive_light_update(self._prim)
+
+        # Apply any forced roughness updates
+        for material in self.materials:
+            material.reflection_roughness_texture_influence = 0.0
+            material.reflection_roughness_constant = gm.FORCE_ROUGHNESS
+
         # Set the joint frictions based on category
         friction = SPECIAL_JOINT_FRICTIONS.get(self.category, DEFAULT_JOINT_FRICTION)
         for joint in self._joints.values():
             if joint.joint_type != JointType.JOINT_FIXED:
                 joint.friction = friction
 
-    def _load(self, simulator=None):
+    def _load(self):
         if gm.USE_ENCRYPTED_ASSETS:
             # Create a temporary file to store the decrytped asset, load it, and then delete it.
             with tempfile.NamedTemporaryFile(suffix=".usd") as fp:
@@ -219,11 +239,11 @@ class DatasetObject(USDObject):
                 encrypted_filename = original_usd_path.replace(".usd", ".encrypted.usd")
                 decrypt_file(encrypted_filename, decrypted_file=fp)
                 self._usd_path = fp.name
-                prim = super()._load(simulator=simulator)
+                prim = super()._load()
                 self._usd_path = original_usd_path
                 return prim
         else:
-            return super()._load(simulator=simulator)
+            return super()._load()
 
     def _post_load(self):
         # We run this post loading first before any others because we're modifying the load config that will be used
@@ -268,12 +288,8 @@ class DatasetObject(USDObject):
             if self._prim_type == PrimType.RIGID:
                 density = mass / self.volume
                 for link in self._links.values():
-                    if bool(link.prim.GetAttribute("ig:is_metalink").Get()):
-                        # This is a metalink; we set a negligible value
-                        link.mass = 1e-6
-                        link.density = 0.0
-                    else:
-                        # Otherwise overwrite the original, inaccurate mass value
+                    # If we're not a metalink, overwrite the original, inaccurate mass value
+                    if not bool(link.prim.GetAttribute("ig:is_metalink").Get()):
                         link.mass = 0.0
                         link.density = density
 
@@ -283,12 +299,14 @@ class DatasetObject(USDObject):
                 self._links["base_link"].mass = mass
 
         # Lastly, after post loading (which includes loading / registering the links internally)
-        # check for any metalinks. If there are any, we disable gravity and collisions for them
+        # check for any metalinks. If there are any, we disable gravity and collisions for them, and also reduce
+        # their density and mass
         for link in self._links.values():
-            is_metalink = link.prim.GetAttribute("ig:is_metalink").Get() or False
-            if is_metalink:
-                # Make sure this link is only visual (i.e.: no collisions or gravity enabled)
+            if bool(link.prim.GetAttribute("ig:is_metalink").Get()):
+                # Make sure this link is only visual (i.e.: no collisions or gravity enabled), and also set small mass
                 link.visual_only = True
+                link.mass = 1e-6
+                link.density = 0.0
 
     def _update_texture_change(self, object_state):
         """
@@ -508,6 +526,7 @@ class DatasetObject(USDObject):
                 - 3-array: (x,y,z) bbox extent in world frame
                 - 3-array: (x,y,z) bbox center in desired frame
         """
+        assert self.prim_type == PrimType.RIGID, "get_base_aligned_bbox is only supported for rigid objects."
         bbox_type = "visual" if visual else "collision"
 
         # Get the base position transform.
@@ -533,7 +552,7 @@ class DatasetObject(USDObject):
                 # If a visual bounding box does not exist in the dictionary, try switching to collision.
                 # We expect that every link has its collision bb annotated (or set to None if none exists).
                 if bbox_type == "visual" and "visual" not in self.native_link_bboxes[link_name]:
-                    logging.debug(
+                    log.debug(
                         "Falling back to collision bbox for object %s link %s since no visual bbox exists.",
                         self.name,
                         link_name,

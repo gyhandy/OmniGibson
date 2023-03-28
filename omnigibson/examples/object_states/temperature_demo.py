@@ -1,4 +1,3 @@
-import logging
 import numpy as np
 
 import omnigibson as og
@@ -16,7 +15,7 @@ def main(random_selection=False, headless=False, short_exec=False):
     The user can move the apples to see them change from frozen, to normal temperature, to cooked and burnt
     This demo also shows how to load objects ToggledOn and how to set the initial temperature of an object
     """
-    logging.info("*" * 80 + "\nDescription:" + main.__doc__ + "*" * 80)
+    og.log.info("*" * 80 + "\nDescription:" + main.__doc__ + "*" * 80)
 
     # Define specific objects we want to load in with the scene directly
     obj_configs = []
@@ -131,11 +130,11 @@ def main(random_selection=False, headless=False, short_exec=False):
     # Set initial temperature of the apples to -50 degrees Celsius, and move the apples to different objects
     for apple in apples:
         apple.states[object_states.Temperature].set_value(-50)
-    apples[0].states[object_states.Inside].set_value(oven, True, use_ray_casting_method=True)
-    apples[1].set_position(stove.states[object_states.HeatSourceOrSink].get_link_position() + np.array([0, 0, 0.1]))
-    apples[2].states[object_states.OnTop].set_value(tray, True, use_ray_casting_method=True)
-    apples[3].states[object_states.Inside].set_value(fridge, True, use_ray_casting_method=True)
-    apples[4].states[object_states.Inside].set_value(microwave, True, use_ray_casting_method=True)
+    apples[0].states[object_states.Inside].set_value(oven, True)
+    apples[1].set_position(stove.states[object_states.HeatSourceOrSink].link.get_position() + np.array([0, 0, 0.1]))
+    apples[2].states[object_states.OnTop].set_value(tray, True)
+    apples[3].states[object_states.Inside].set_value(fridge, True)
+    apples[4].states[object_states.Inside].set_value(microwave, True)
 
     steps = 0
     max_steps = -1 if not short_exec else 1000

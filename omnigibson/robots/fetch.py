@@ -1,7 +1,7 @@
 import os
 import numpy as np
 
-import omnigibson
+import omnigibson as og
 from omnigibson.controllers import ControlType
 from omnigibson.robots.active_camera_robot import ActiveCameraRobot
 from omnigibson.robots.manipulation_robot import GraspingPoint, ManipulationRobot
@@ -32,13 +32,12 @@ class Fetch(ManipulationRobot, TwoWheelRobot, ActiveCameraRobot):
     def __init__(
         self,
         # Shared kwargs in hierarchy
-        prim_path,
-        name=None,
+        name,
+        prim_path=None,
         class_id=None,
         uuid=None,
         scale=None,
         visible=True,
-        fixed_base=False,
         visual_only=False,
         self_collisions=False,
         load_config=None,
@@ -69,9 +68,9 @@ class Fetch(ManipulationRobot, TwoWheelRobot, ActiveCameraRobot):
     ):
         """
         Args:
-            prim_path (str): global path in the stage to this object
-            name (None or str): Name for the object. Names need to be unique per scene. If None, a name will be
-                generated at the time the object is added to the scene, using the object's category.
+            name (str): Name for the object. Names need to be unique per scene
+            prim_path (None or str): global path in the stage to this object. If not specified, will automatically be
+                created at /World/<name>
             class_id (None or int): What class ID the object should be assigned in semantic segmentation rendering mode.
                 If None, the ID will be inferred from this object's category.
             uuid (None or int): Unique unsigned-integer identifier to assign to this object (max 8-numbers).
@@ -80,7 +79,6 @@ class Fetch(ManipulationRobot, TwoWheelRobot, ActiveCameraRobot):
                 for this object. A single number corresponds to uniform scaling along the x,y,z axes, whereas a
                 3-array specifies per-axis scaling.
             visible (bool): whether to render this object or not in the stage
-            fixed_base (bool): whether to fix the base of this object or not
             visual_only (bool): Whether this object should be visual only (and not collide with any other objects)
             self_collisions (bool): Whether to enable self collisions for this object
             load_config (None or dict): If specified, should contain keyword-mapped values that are relevant for
@@ -138,7 +136,7 @@ class Fetch(ManipulationRobot, TwoWheelRobot, ActiveCameraRobot):
             uuid=uuid,
             scale=scale,
             visible=visible,
-            fixed_base=fixed_base,
+            fixed_base=False,
             visual_only=visual_only,
             self_collisions=self_collisions,
             load_config=load_config,
@@ -423,12 +421,12 @@ class Fetch(ManipulationRobot, TwoWheelRobot, ActiveCameraRobot):
 
     @property
     def usd_path(self):
-        return os.path.join(omnigibson.assets_path, "models/fetch/fetch/fetch.usd")
+        return os.path.join(og.assets_path, "models/fetch/fetch/fetch.usd")
 
     @property
     def robot_arm_descriptor_yamls(self):
-        return {self.default_arm: os.path.join(omnigibson.assets_path, "models/fetch/fetch_descriptor.yaml")}
+        return {self.default_arm: os.path.join(og.assets_path, "models/fetch/fetch_descriptor.yaml")}
 
     @property
     def urdf_path(self):
-        return os.path.join(omnigibson.assets_path, "models/fetch/fetch.urdf")
+        return os.path.join(og.assets_path, "models/fetch/fetch.urdf")

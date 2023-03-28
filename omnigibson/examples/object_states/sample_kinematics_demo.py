@@ -1,4 +1,3 @@
-import logging
 import os
 
 import numpy as np
@@ -9,9 +8,8 @@ from omnigibson.macros import gm
 from omnigibson.objects import DatasetObject
 
 
-# Make sure object states and global contact reporting are enabled
+# Make sure object states are enabled
 gm.ENABLE_OBJECT_STATES = True
-gm.ENABLE_GLOBAL_CONTACT_REPORTING = True
 
 
 def main(random_selection=False, headless=False, short_exec=False):
@@ -20,7 +18,7 @@ def main(random_selection=False, headless=False, short_exec=False):
     Loads a cabinet, a microwave open on top of it, and two plates with apples on top, one inside and one on top of the cabinet
     Then loads a shelf and cracker boxes inside of it
     """
-    logging.info("*" * 80 + "\nDescription:" + main.__doc__ + "*" * 80)
+    og.log.info("*" * 80 + "\nDescription:" + main.__doc__ + "*" * 80)
 
     # Create the scene config to load -- empty scene
     cfg = {
@@ -49,7 +47,7 @@ def main(random_selection=False, headless=False, short_exec=False):
 
 def sample_microwave_plates_apples(env):
     # Load cabinet, set position manually, and step 100 times
-    logging.info("Loading cabinet and microwave")
+    og.log.info("Loading cabinet and microwave")
 
     microwave = DatasetObject(
         prim_path="/World/microwave",
@@ -75,14 +73,14 @@ def sample_microwave_plates_apples(env):
     env.step(np.array([]))              # One step is needed for the object to be fully initialized
 
     # Set microwave on top of the cabinet, open it, and step 100 times
-    logging.info("Placing microwave OnTop of the cabinet")
-    assert microwave.states[object_states.OnTop].set_value(cabinet, True, use_ray_casting_method=True)
+    og.log.info("Placing microwave OnTop of the cabinet")
+    assert microwave.states[object_states.OnTop].set_value(cabinet, True)
     assert microwave.states[object_states.Open].set_value(True)
-    logging.info("Microwave loaded and placed")
+    og.log.info("Microwave loaded and placed")
     for _ in range(50):
         env.step(np.array([]))
 
-    logging.info("Loading plates")
+    og.log.info("Loading plates")
     n_plates = 2
     n_apples = 2
     for i in range(n_plates):
@@ -98,17 +96,17 @@ def sample_microwave_plates_apples(env):
 
         # Put the 1st plate in the microwave
         if i == 0:
-            logging.info("Loading plate Inside the microwave")
-            assert plate.states[object_states.Inside].set_value(microwave, True, use_ray_casting_method=True)
+            og.log.info("Loading plate Inside the microwave")
+            assert plate.states[object_states.Inside].set_value(microwave, True)
         else:
-            logging.info("Loading plate OnTop the microwave")
-            assert plate.states[object_states.OnTop].set_value(microwave, True, use_ray_casting_method=True)
+            og.log.info("Loading plate OnTop the microwave")
+            assert plate.states[object_states.OnTop].set_value(microwave, True)
 
-        logging.info("Plate %d loaded and placed." % i)
+        og.log.info("Plate %d loaded and placed." % i)
         for _ in range(50):
             env.step(np.array([]))
 
-        logging.info("Loading three apples OnTop of the plate")
+        og.log.info("Loading three apples OnTop of the plate")
         for j in range(n_apples):
             apple = DatasetObject(
                 prim_path=f"/World/apple{i * n_apples + j}",
@@ -118,8 +116,8 @@ def sample_microwave_plates_apples(env):
             )
             og.sim.import_object(apple)
             env.step(np.array([]))  # One step is needed for the object to be fully initialized
-            assert apple.states[object_states.OnTop].set_value(plate, True, use_ray_casting_method=True)
-            logging.info("Apple %d loaded and placed." % j)
+            assert apple.states[object_states.OnTop].set_value(plate, True)
+            og.log.info("Apple %d loaded and placed." % j)
             for _ in range(50):
                 env.step(np.array([]))
 
@@ -137,7 +135,7 @@ def sample_boxes_on_shelf(env):
     shelf.set_position(np.array([-1.0, 0, z_offset]))
     env.step(np.array([]))  # One step is needed for the object to be fully initialized
 
-    logging.info("Shelf placed")
+    og.log.info("Shelf placed")
     for _ in range(50):
         env.step(np.array([]))
 
@@ -151,8 +149,8 @@ def sample_boxes_on_shelf(env):
         )
         og.sim.import_object(box)
         env.step(np.array([]))  # One step is needed for the object to be fully initialized
-        box.states[object_states.Inside].set_value(shelf, True, use_ray_casting_method=True)
-        logging.info(f"Box {i} placed.")
+        box.states[object_states.Inside].set_value(shelf, True)
+        og.log.info(f"Box {i} placed.")
 
         for _ in range(50):
             env.step(np.array([]))
