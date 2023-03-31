@@ -2,7 +2,7 @@ import itertools
 import math
 import os
 import tempfile
-
+import stat
 import cv2
 import numpy as np
 
@@ -11,8 +11,8 @@ from scipy.spatial.transform import Rotation
 from omni.isaac.core.utils.rotations import gf_quat_to_np_array
 
 import omnigibson as og
+from omnigibson.macros import gm
 from omnigibson.objects.usd_object import USDObject
-from omnigibson.prims.rigid_prim import RigidPrim
 from omnigibson.utils.constants import AVERAGE_CATEGORY_SPECS, DEFAULT_JOINT_FRICTION, SPECIAL_JOINT_FRICTIONS, JointType
 import omnigibson.utils.transform_utils as T
 from omnigibson.utils.usd_utils import BoundingBoxAPI
@@ -124,7 +124,7 @@ class DatasetObject(USDObject):
         if usd_path is None:
             assert model is not None, f"Either usd_path or model and category must be specified in order to create a" \
                                       f"DatasetObject!"
-            usd_path = f"{og.og_dataset_path}/objects/{category}/{model}/usd/{model}.usd"
+            usd_path = f"{gm.DATASET_PATH}/objects/{category}/{model}/usd/{model}.usd"
 
         # Post-process the usd path if we're generating a cloth object
         if prim_type == PrimType.CLOTH:
@@ -234,14 +234,18 @@ class DatasetObject(USDObject):
     def _load(self):
         if gm.USE_ENCRYPTED_ASSETS:
             # Create a temporary file to store the decrytped asset, load it, and then delete it.
-            with tempfile.NamedTemporaryFile(suffix=".usd") as fp:
-                original_usd_path = self._usd_path
-                encrypted_filename = original_usd_path.replace(".usd", ".encrypted.usd")
-                decrypt_file(encrypted_filename, decrypted_file=fp)
-                self._usd_path = fp.name
-                prim = super()._load()
-                self._usd_path = original_usd_path
-                return prim
+            original_usd_path = self._usd_path
+            encrypted_filename = original_usd_path.replace(".usd", ".encrypted.usd")
+            decrypted_fd, decrypted_filename = tempfile.mkstemp(os.path.basename(original_usd_path), dir=og.tempdir)
+            decrypt_file(encrypted_filename, decrypted_filename)
+            self._usd_path = decrypted_filename
+            prim = super()._load()
+            os.close(decrypted_fd)
+            # On Windows, Isaac Sim won't let go of the file until the prim is removed, so we can't delete it.
+            if os.name == "posix":
+                os.remove(decrypted_filename)
+            self._usd_path = original_usd_path
+            return prim
         else:
             return super()._load()
 
@@ -252,7 +256,7 @@ class DatasetObject(USDObject):
         if self._load_config["fit_avg_dim_volume"]:
             # By default, we assume scale does not change if no avg obj specs are given, otherwise, scale accordingly
             scale = np.ones(3)
-            if self.avg_obj_dims is not None:
+            if self.avg_obj_dims is not None and self.avg_obj_dims["size"] is not None:
                 # Find the average volume, and scale accordingly relative to the native volume based on the bbox
                 volume_ratio = np.product(self.avg_obj_dims["size"]) / np.product(self.native_bbox)
                 size_ratio = np.cbrt(volume_ratio)
@@ -281,15 +285,15 @@ class DatasetObject(USDObject):
                 material.shader_update_asset_paths_with_root_path(root_path)
 
         # Assign realistic density and mass based on average object category spec
-        if self.avg_obj_dims is not None:
+        if self.avg_obj_dims is not None and self.avg_obj_dims["size"] is not None and self.avg_obj_dims["mass"] is not None:
             # Assume each link has the same density
             v_ratio = (np.product(self.native_bbox) * np.product(self.scale)) / np.product(self.avg_obj_dims["size"])
             mass = self.avg_obj_dims["mass"] * v_ratio
             if self._prim_type == PrimType.RIGID:
                 density = mass / self.volume
                 for link in self._links.values():
-                    # If we're not a metalink, overwrite the original, inaccurate mass value
-                    if not bool(link.prim.GetAttribute("ig:is_metalink").Get()):
+                    # If not a meta (virtual) link, set the density based on avg_obj_dims and a zero mass (ignored)
+                    if link.has_collision_meshes:
                         link.mass = 0.0
                         link.density = density
 
@@ -297,16 +301,6 @@ class DatasetObject(USDObject):
                 # Cloth cannot set density. Internally omni evenly distributes the mass to each particle
                 mass = self.avg_obj_dims["mass"] * v_ratio
                 self._links["base_link"].mass = mass
-
-        # Lastly, after post loading (which includes loading / registering the links internally)
-        # check for any metalinks. If there are any, we disable gravity and collisions for them, and also reduce
-        # their density and mass
-        for link in self._links.values():
-            if bool(link.prim.GetAttribute("ig:is_metalink").Get()):
-                # Make sure this link is only visual (i.e.: no collisions or gravity enabled), and also set small mass
-                link.visual_only = True
-                link.mass = 1e-6
-                link.density = 0.0
 
     def _update_texture_change(self, object_state):
         """

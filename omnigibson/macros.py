@@ -5,22 +5,33 @@ NOTE: This is generally decentralized -- the monolithic @settings variable is cr
 but submodules within OmniGibson may import this dictionary and add to it dynamically
 """
 import os
+import pathlib
 
 from addict import Dict
-
 
 # Initialize settings
 macros = Dict()
 gm = macros.globals
 
+# Paths (either relative to this directory or global absolute paths) for assets
+# Assets correspond to non-objects / scenes (e.g.: robots), and dataset incliudes objects + scene
+gm.ASSET_PATH = "data/assets"
+gm.DATASET_PATH = "data/og_dataset"
+gm.KEY_PATH = "data/omnigibson.key"
+
 # Whether to generate a headless or non-headless application upon OmniGibson startup
 gm.HEADLESS = (os.getenv("OMNIGIBSON_HEADLESS", 'False').lower() in ('true', '1', 't'))
 
-# Whether to use extra settings (verboseness, extra GUI features) for debugging
-gm.DEBUG = True
+# Whether only the viewport should be shown in the GUI or not (if not, other peripherals are additionally shown)
+gm.GUI_VIEWPORT_ONLY = False
+
+# Do not suppress known omni warnings / errors, and also put omnigibson in a debug state
+# This includes extra information for things such as object sampling, and also any debug
+# logging messages
+gm.DEBUG = False
 
 # Whether to print out disclaimers (i.e.: known failure cases resulting from Omniverse's current bugs / limitations)
-gm.SHOW_DISCLAIMERS = True
+gm.SHOW_DISCLAIMERS = False
 
 # Whether to enable (a) [global / robot] contact checking or not
 # Note: You can enable the robot contact checking, even if global checking is disabled
@@ -89,11 +100,14 @@ def create_module_macros(module_path):
         Dict: addict dictionary which can be populated with values
     """
     # Sanity check module path, make sure omnigibson/ is in the path
-    assert "omnigibson/" in module_path, \
-        f"module_path is expected to be a filepath including the omnigibson root directory, got: {module_path}!"
+    module_path = pathlib.Path(module_path)
+    omnigibson_path = pathlib.Path(__file__).parent
 
     # Trim the .py, and anything before and including omnigibson/, and split into its appropriate parts
-    subsections = module_path[:-3].split("omnigibson/")[-1].split("/")
+    try:
+        subsections = module_path.with_suffix("").relative_to(omnigibson_path).parts
+    except ValueError:
+        raise ValueError("module_path is expected to be a filepath including the omnigibson root directory, got: {module_path}!")
 
     # Create and return the generated sub-dictionary
     def _recursively_get_or_create_dict(dic, keys):

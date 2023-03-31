@@ -19,6 +19,7 @@ from omnigibson.utils.constants import ParticleModifyMethod, PrimType
 from omnigibson.utils.geometry_utils import generate_points_in_volume_checker_function, get_particle_positions_from_frame
 from omnigibson.utils.python_utils import assert_valid_key, classproperty
 from omnigibson.utils.deprecated_utils import Core
+from omnigibson.utils.ui_utils import suppress_omni_log
 from omnigibson.utils.usd_utils import create_primitive_mesh, FlatcacheAPI
 import omnigibson.utils.transform_utils as T
 from omnigibson.utils.sampling_utils import sample_cuboid_on_object
@@ -70,15 +71,10 @@ def create_projection_visualization(
         projection_height,
         particle_radius,
         material=None,
-        visualize=True,
 ):
     """
     Helper function to generate a projection visualization using Omniverse's particle visualization system
 
-    NOTE: Due to limitations with omniverse's generation scheme, the generated projection must have its origin at
-    the origin of its parent frame, with its cone / cylinder facing in the local x-axis direction. The parent frame
-    should also be aligned to its own parent frame to one of its own parent frame's axes - ie: any orientation such
-    that its axes are exactly parallel / orthogonal to its parent axes.
 
     Args:
         prim_path (str): Stage location for where to generate the projection visualization
@@ -89,7 +85,6 @@ def create_projection_visualization(
         particle_radius (float): Radius of the particles composing the projection visualization
         material (None or MaterialPrim): If specified, specifies the material to associate with the generated
             particles within the projection visualization
-        visualize (bool): Whether to visualize the resulting projection or not
 
     Returns:
         2-tuple:
@@ -110,13 +105,17 @@ def create_projection_visualization(
     else:
         raise ValueError(f"Invalid shape specified for projection visualization! Valid options are: [Sphere, Cylinder], got: {shape}")
     # Set the radius
-    # Note that we divide the expected value in half since the native Sphere geom has native extents [2, 2, 2]
-    source.GetRadiusAttr().Set(source_radius / 2.0)
+    source.GetRadiusAttr().Set(source_radius)
     # Also make the prim invisible
     UsdGeom.Imageable(source.GetPrim()).MakeInvisible()
     # Generate the ComputeGraph nodes to render the projection
     core = Core(lambda val: None, particle_system_name=projection_name)
-    system_path, _, emitter_path, vis_path, instancer_path, sprite_path, mat_path, output_path = core.create_particle_system(display="point_instancer", paths=[prim_path])
+
+    # Suppress omni warnings here -- we don't have control over this API, but omni likes to complain about this
+    with suppress_omni_log(channels=["omni.graph.core.plugin", "omni.usd", "rtx.neuraylib.plugin"]):
+        system_path, _, emitter_path, vis_path, instancer_path, sprite_path, mat_path, output_path = \
+            core.create_particle_system(display="point_instancer", paths=[prim_path])
+
     # Override the prototype with our own sphere with optional material
     prototype_path = "/".join(sprite_path.split("/")[:-1]) + "/prototype"
     create_primitive_mesh(prototype_path, primitive_type="Sphere")
@@ -135,7 +134,7 @@ def create_projection_visualization(
 
     # Modify the settings of the emitter to match the desired shape from inputs
     emitter_prim = get_prim_at_path(emitter_path)
-    emitter_prim.GetProperty("inputs:active").Set(visualize)
+    emitter_prim.GetProperty("inputs:active").Set(True)
     emitter_prim.GetProperty("inputs:rate").Set(m.PROJECTION_VISUALIZATION_RATE)
     emitter_prim.GetProperty("inputs:lifespan").Set(projection_height / m.PROJECTION_VISUALIZATION_SPEED)
     emitter_prim.GetProperty("inputs:speed").Set(m.PROJECTION_VISUALIZATION_SPEED)
@@ -144,10 +143,11 @@ def create_projection_visualization(
     emitter_prim.GetProperty("inputs:directionRandom").Set(Gf.Vec3f(*spread))
     emitter_prim.GetProperty("inputs:addSourceVelocity").Set(1.0)
 
-    # Move the output path so it moves with the particle system prim
-    og.sim.render()
-    output_name = output_path.split("/")[-1]
-    move_prim(output_path, f"{system_path}/{output_name}")
+    # Make sure we render 4 times to fully propagate changes (validated empirically)
+    # Omni likes to complain here again, but we have no control over the low-level information, so we suppress warnings
+    with suppress_omni_log(channels=["omni.particle.system.core.plugin", "omni.hydra.scene_delegate.plugin", "omni.usd"]):
+        for i in range(4):
+            og.sim.render()
 
     # Return the particle system prim which "owns" everything
     return get_prim_at_path(system_path), emitter_prim
@@ -216,6 +216,8 @@ class ParticleModifier(AbsoluteObjectState, LinkBasedStateMixin, UpdateStateMixi
         super().__init__(obj)
 
     def _initialize(self):
+        super()._initialize()
+
         # Run link initialization
         self.initialize_link_mixin()
 
@@ -254,10 +256,8 @@ class ParticleModifier(AbsoluteObjectState, LinkBasedStateMixin, UpdateStateMixi
             radius, height = self._projection_mesh_params["extents"][0] / 2.0, self._projection_mesh_params["extents"][2]
             if not get_prim_at_path(mesh_prim_path):
                 mesh = UsdGeom.__dict__[self._projection_mesh_params["type"]].Define(og.sim.stage, mesh_prim_path).GetPrim()
-                # Set the height and radius (scaled by half since the native objects have extents [2, 2, 2]
-                # TODO: Generalize to objects other than cylinder and radius
-                mesh.GetAttribute("height").Set(height / 2.0)
-                mesh.GetAttribute("radius").Set(radius / 2.0)
+                mesh.GetAttribute("height").Set(height)
+                mesh.GetAttribute("radius").Set(radius)
 
             # Create the visual geom instance referencing the generated mesh prim, and then hide it
             self.projection_mesh = VisualGeomPrim(prim_path=mesh_prim_path, name=f"{name_prefix}_projection_mesh")
@@ -269,11 +269,12 @@ class ParticleModifier(AbsoluteObjectState, LinkBasedStateMixin, UpdateStateMixi
 
             # Make sure the mesh is translated so that its tip lies at the metalink origin, and rotated so the vector
             # from tip to tail faces the positive x axis
-            x_offset = self._projection_mesh_params["extents"][2] / 4 if \
-                self._projection_mesh_params["type"] == "Cylinder" else self._projection_mesh_params["extents"][2] / 2
+            z_offset = self._projection_mesh_params["extents"][2] if self._projection_mesh_params["type"] == "Cone" \
+                else self._projection_mesh_params["extents"][2] / 2
+
             self.projection_mesh.set_local_pose(
-                translation=np.array([x_offset / self.link.scale[2], 0, 0]),
-                orientation=T.euler2quat([0, -np.pi / 2, 0]),
+                translation=np.array([0, 0, -z_offset]),
+                orientation=T.euler2quat([0, 0, 0]),
             )
 
             # Generate the function for checking whether points are within the projection mesh
@@ -530,7 +531,7 @@ class ParticleRemover(ParticleModifier):
         if issubclass(system, VisualParticleSystem):
             # Iterate over all particles and remove any that are within the relaxed AABB of the remover volume
             particle_names = list(system.particles.keys())
-            particle_positions = np.array([system.get_particle_position_orientation(name=name)[0] for name in system.particles.keys()])
+            particle_positions = system.get_particles_position_orientation()[0]
             inbound_idxs = self._check_in_mesh(particle_positions).nonzero()[0]
             max_particle_absorbed = self.visual_particle_modification_limit - self.modified_particle_count[system.name]
             for idx in inbound_idxs[:max_particle_absorbed]:
@@ -650,9 +651,8 @@ class ParticleApplier(ParticleModifier):
         # get_system will initialize the system if it's not initialized already.
         system = get_system(system_name)
 
-        if self.method == ParticleModifyMethod.PROJECTION:
+        if self.method == ParticleModifyMethod.PROJECTION and self._projection_mesh_params["visualize"]:
             radius, height = self._projection_mesh_params["extents"][0] / 2.0, self._projection_mesh_params["extents"][2]
-
             # Generate the projection visualization
             particle_radius = m.VISUAL_PARTICLE_PROJECTION_PARTICLE_RADIUS if issubclass(system, VisualParticleSystem) else system.particle_radius
             particle_material = system.particle_object.material if issubclass(system, VisualParticleSystem) else system.material
@@ -674,13 +674,14 @@ class ParticleApplier(ParticleModifier):
                     projection_height=height,
                     particle_radius=particle_radius,
                     material=particle_material,
-                    visualize=self._projection_mesh_params["visualize"],
                 )
 
             # Create the visual geom instance referencing the generated source mesh prim, and then hide it
             self.projection_source_sphere = VisualGeomPrim(prim_path=projection_visualization_path, name=f"{name_prefix}_projection_source_sphere")
             self.projection_source_sphere.initialize()
             self.projection_source_sphere.visible = False
+            # Rotate by 90 degrees in y-axis so that the projection visualization aligns with the projection mesh
+            self.projection_source_sphere.set_orientation(T.euler2quat([0, np.pi / 2, 0]))
 
         # Store which method to use for sampling particle locations
         if self._sample_with_raycast:
@@ -715,22 +716,20 @@ class ParticleApplier(ParticleModifier):
         sampling_distance = 2 * system.particle_radius
         extent = np.array(self._projection_mesh_params["extents"])
         h = extent[2]
-        low = np.array([-extent[0] / 2, -extent[1] / 2, 0])
-        high = np.array([extent[0] / 2, extent[1] / 2, h])
-        n_particles_per_axis = ((extent - 2 * system.particle_radius) / sampling_distance).astype(int) + 1
-        arrs = [np.linspace(lo + system.particle_radius, hi - system.particle_radius, n) for lo, hi, n in
-                zip(low, high, n_particles_per_axis)]
+        low = np.array([-extent[0] / 2, -extent[1] / 2, -h])
+        high = np.array([extent[0] / 2, extent[1] / 2, 0])
+        n_particles_per_axis = (extent / sampling_distance).astype(int)
+        assert np.all(n_particles_per_axis), f"link {self.link.name} is too small to sample any particle of radius {system.particle_radius}."
+        # 1e-10 is added because the extent might be an exact multiple of particle radius
+        arrs = [np.arange(lo + system.particle_radius, hi - system.particle_radius + 1e-10, system.particle_radius * 2)
+                for lo, hi, n in zip(low, high, n_particles_per_axis)]
         # Generate 3D-rectangular grid of points, and only keep the ones inside the mesh
         points = np.stack([arr.flatten() for arr in np.meshgrid(*arrs)]).T
-        # Flip the x and z values so that the positions are in the LINK frame, not the MESH frame
-        # This is super ugly, but necessary because omni requires the native visualization XForm to have its
-        # local x-axis pointing in the direction where particles will be spawned!
-        points = points[:, [2, 1, 0]]
         pos, quat = self.link.get_position_orientation()
         points_in_world_frame = get_particle_positions_from_frame(
             pos=pos,
             quat=quat,
-            scale=np.ones(3),
+            scale=self.obj.scale,
             particle_positions=points,
         )
         points = points[np.where(self._check_in_mesh(points_in_world_frame))[0]]
@@ -742,12 +741,12 @@ class ParticleApplier(ParticleModifier):
         # vector pointing from source to the particle
         projection_type = self._projection_mesh_params["type"]
         if projection_type == "Cone":
-            # Particles point from source to point location
-            directions = [point - np.array([h, 0, 0]) for point in self._in_mesh_local_particle_positions]
+            # Particles point from source ([0, 0, 0]) to point location
+            directions = np.copy(self._in_mesh_local_particle_positions)
         elif projection_type == "Cylinder":
-            # All particle points in the same parallel direction
+            # All particle points in the same parallel direction towards the -z direction
             directions = np.zeros_like(self._in_mesh_local_particle_positions)
-            directions[:, 0] = -h
+            directions[:, 2] = -h
         else:
             raise ValueError(
                 "If not sampling with raycast, ParticleApplier only supports `Cone` or `Cylinder` projection types!")
@@ -783,9 +782,10 @@ class ParticleApplier(ParticleModifier):
                 cuboid_dimensions=cuboid_dimensions,
                 ignore_objs=[self.obj],
                 hit_proportion=0.0,             # We want all hits
-                undo_cuboid_bottom_padding=issubclass(system, VisualParticleSystem),      # micro particles have zero cuboid dimensions so we need to maintain padding
                 cuboid_bottom_padding=system.particle_radius if issubclass(system, PhysicalParticleSystem) else
                 macros.utils.sampling_utils.DEFAULT_CUBOID_BOTTOM_PADDING,
+                undo_cuboid_bottom_padding=issubclass(system, VisualParticleSystem),      # micro particles have zero cuboid dimensions so we need to maintain padding
+                verify_cuboid_empty=False,
             )
 
             hits = [result for result in results if result[0] is not None]
@@ -793,7 +793,7 @@ class ParticleApplier(ParticleModifier):
 
             self._apply_particles_at_raycast_hits(system=system, hits=hits, scales=scales)
         else:
-            self._apply_particle_in_projection_volume(system=system)
+            self._apply_particles_in_projection_volume(system=system)
 
     def _apply_particles_at_raycast_hits(self, system, hits, scales=None):
         """
@@ -855,9 +855,9 @@ class ParticleApplier(ParticleModifier):
                     velocities=velocities,
                 )
                 # Update our particle count
-                self.modified_particle_count[system] += n_particles
+                self.modified_particle_count[system.name] += n_particles
 
-    def _apply_particle_in_projection_volume(self, system):
+    def _apply_particles_in_projection_volume(self, system):
         """
         Helper function to apply particles form system @system within the projection volume owned by this
         ParticleApplier.
@@ -870,30 +870,30 @@ class ParticleApplier(ParticleModifier):
         """
         assert self.method == ParticleModifyMethod.PROJECTION, \
             "Can only apply particles within projection volume if ParticleModifyMethod.PROJECTION method is used!"
+        assert issubclass(system, PhysicalParticleSystem), \
+            "Can only apply particles within projection volume if system is PhysicalParticleSystem!"
 
-        # Check the system
-        if issubclass(system, PhysicalParticleSystem):
-            # Transform pre-cached particle positions into the world frame
-            pos, quat = self.link.get_position_orientation()
-            points = get_particle_positions_from_frame(
-                pos=pos,
-                quat=quat,
-                scale=np.ones(3),
-                particle_positions=self._in_mesh_local_particle_positions,
+        # Transform pre-cached particle positions into the world frame
+        pos, quat = self.link.get_position_orientation()
+        points = get_particle_positions_from_frame(
+            pos=pos,
+            quat=quat,
+            scale=self.obj.scale,
+            particle_positions=self._in_mesh_local_particle_positions,
+        )
+        directions = self._in_mesh_local_particle_directions @ T.quat2mat(quat).T
+
+        # Compile the particle poses to generate and sample the particles
+        n_particles = min(len(points), m.PHYSICAL_PARTICLES_APPLICATION_LIMIT - self.modified_particle_count[system.name])
+        # Generate particles
+        if n_particles > 0:
+            velocities = None if self._initial_speed == 0 else self._initial_speed * directions[:n_particles]
+            system.default_particle_instancer.add_particles(
+                positions=points[:n_particles],
+                velocities=velocities,
             )
-            directions = self._in_mesh_local_particle_directions @ T.quat2mat(quat).T
-
-            # Compile the particle poses to generate and sample the particles
-            n_particles = min(len(points), m.PHYSICAL_PARTICLES_APPLICATION_LIMIT - self.modified_particle_count[system])
-            # Generate particles
-            if n_particles > 0:
-                velocities = None if self._initial_speed == 0 else self._initial_speed * directions[:n_particles]
-                system.default_particle_instancer.add_particles(
-                    positions=points[:n_particles],
-                    velocities=velocities,
-                )
-                # Update our particle count
-                self.modified_particle_count[system.name] += n_particles
+            # Update our particle count
+            self.modified_particle_count[system.name] += n_particles
 
     def _sample_particle_locations_from_projection_volume(self, system):
         """
@@ -912,11 +912,11 @@ class ParticleApplier(ParticleModifier):
         r, h = self._projection_mesh_params["extents"][0] / 2, self._projection_mesh_params["extents"][2]
         sampled_r_theta = np.random.rand(n_samples, 2)
         sampled_r_theta = sampled_r_theta * np.array([r, np.pi * 2]).reshape(1, 2)
-        # Get start, end points in local link frame
+        # Get start, end points in local link frame, start points to end points along the -z direction
         end_points = np.stack([
-            h * np.ones(n_samples),
             sampled_r_theta[:, 0] * np.cos(sampled_r_theta[:, 1]),
             sampled_r_theta[:, 0] * np.sin(sampled_r_theta[:, 1]),
+            -h * np.ones(n_samples),
         ], axis=1)
         projection_type = self._projection_mesh_params["type"]
         if projection_type == "Cone":
@@ -925,7 +925,7 @@ class ParticleApplier(ParticleModifier):
         elif projection_type == "Cylinder":
             # All start points are the parallel point for their corresponding end point
             # i.e.: (x, y, 0)
-            start_points = end_points + np.array([-h, 0, 0]).reshape(1, 3)
+            start_points = end_points + np.array([0, 0, h]).reshape(1, 3)
         else:
             # Other types not supported
             raise ValueError(f"Unsupported projection mesh type: {projection_type}!")
@@ -938,7 +938,7 @@ class ParticleApplier(ParticleModifier):
         points = get_particle_positions_from_frame(
             pos=pos,
             quat=quat,
-            scale=np.ones(3),
+            scale=self.obj.scale,
             particle_positions=points,
         )
 
