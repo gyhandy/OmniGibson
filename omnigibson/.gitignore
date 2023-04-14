@@ -5,3 +5,6 @@ dataset
 og_dataset
 render/coord.npy
 render/model.pth
+
+*.json
+*.png

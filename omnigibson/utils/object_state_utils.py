@@ -97,6 +97,9 @@ def sample_kinematics(
         else:
             orientation = np.array([0, 0, 0, 1.0])
 
+        # always place new object in up orientation
+        orientation = np.array([0, 0, 0, 1.0])
+
         # Orientation needs to be set for stable_z_on_aabb to work correctly
         # Position needs to be set to be very far away because the object's
         # original position might be blocking rays (use_ray_casting_method=True)
