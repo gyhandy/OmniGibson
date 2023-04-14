@@ -15,8 +15,9 @@ gm = macros.globals
 
 # Paths (either relative to this directory or global absolute paths) for assets
 # Assets correspond to non-objects / scenes (e.g.: robots), and dataset incliudes objects + scene
-gm.ASSET_PATH = "data/assets"
+gm.ASSET_PATH = "data/ig_assets"
 gm.DATASET_PATH = "data/og_dataset"
+# gm.DATASET_PATH = "data/og_dataset_temp/og_dataset"
 gm.KEY_PATH = "data/omnigibson.key"
 
 # Whether to generate a headless or non-headless application upon OmniGibson startup
