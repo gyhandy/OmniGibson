@@ -1,4 +1,5 @@
 import random
+import numpy as np
 
 from omnigibson.macros import create_module_macros
 from omnigibson.object_states.object_state_base import BooleanState, AbsoluteObjectState
@@ -179,13 +180,20 @@ class Open(AbsoluteObjectState, BooleanState):
         sides = [1, -1] if both_sides else [1]
 
         for _ in range(m.OPEN_SAMPLING_ATTEMPTS):
-            side = random.choice(sides)
+            side = np.random.choice(sides)
 
             # All joints are relevant if we are closing, but if we are opening let's sample a subset.
-            if new_value and not fully:
-                num_to_open = random.randint(1, len(relevant_joints))
-                relevant_joints = random.sample(relevant_joints, num_to_open)
+            if new_value:
+            # if new_value and not fully:
+                # num_to_open = random.randint(1, len(relevant_joints))
+                # relevant_joints = random.sample(relevant_joints, num_to_open)
 
+                num_to_open = np.random.randint(1, len(relevant_joints)+1)
+                # num_to_open = len(relevant_joints) # 0404 temporary hack for link bbox debugging
+                print(f"Open {num_to_open} joints out of {len(relevant_joints)}")
+                # relevant_joints = random.sample(relevant_joints, num_to_open)
+                relevant_joints = np.random.choice(relevant_joints, size=num_to_open, replace=False)
+            
             # Go through the relevant joints & set random positions.
             for joint, joint_direction in zip(relevant_joints, joint_directions):
                 threshold, open_end, closed_end = _compute_joint_threshold(joint, joint_direction * side)
@@ -204,16 +212,17 @@ class Open(AbsoluteObjectState, BooleanState):
                     high = max(joint_range)
 
                     # Sample a position.
-                    joint_pos = random.uniform(low, high)
+                    joint_pos = np.random.uniform(low, high)
+                    # joint_pos = (low+high)/2 # 0404 temporary hack for link bbox debug
 
                 # Save sampled position.
                 joint.set_pos(joint_pos)
 
             # If we succeeded, return now.
             if self._get_value() == new_value:
-                return True
+                return True, relevant_joints
 
         # We exhausted our attempts and could not find a working sample.
-        return False
+        return False, None
 
     # We don't need to load / save anything since the joints are saved elsewhere
