@@ -42,6 +42,7 @@ from omnigibson.utils.collectData.openable_obj import (
 from omnigibson.utils.collectData.bbox_utils import get_all_bboxes
 from omnigibson.utils.collectData.env_utils import (
     create_env_with_light,
+    create_predefined_env,
     sample_cam_pose,
 )
 
@@ -92,7 +93,7 @@ def save_obs(prefix, is_open, info, fpath="collected_data/small_sample/", cam=No
     info[prefix] = {"bbox_loose":(left_corner_loose, span_loose), "is_open":is_open}
     return info
 
-def save_link_level_obs(obj, opened_links, prefix, info, fpath="collected_data/small_sample/", cam=None):
+def save_link_level_obs(obj, opened_links, prefix, info, fpath="collected_data/small_sample/", cam=None, keep_categories=['bottom_cabinet', 'top_cabinet']):
     '''
     Helper function to save current obs to fig
     obj: DatasetObject -- TODO: extend for multiple objects
@@ -111,16 +112,26 @@ def save_link_level_obs(obj, opened_links, prefix, info, fpath="collected_data/s
 
     if len(obs["bbox_2d_tight"]) == 0:
         # not visible, don't save
+        og.log.info("no bbox, returning")
         return info
     
-    # TODO: 
-    link_bboxes, bbox_img = get_all_bboxes(obj, cam)
+    # TODO: select only wanted object in bbox
+    bbox_obs = obs["bbox_2d_loose"]
+    bbox_obs = [ob for ob in bbox_obs if f"/World/{obj.name}" in ob[1]]
+    link_bboxes, bbox_img = get_all_bboxes(obj, cam, bbox_obs=bbox_obs, keep_categories=keep_categories)
 
     rgb = obs["rgb"][:, :, :3]
-    rgb_with_bbox = bbox_img
-
     plt.imsave(f"{fpath}/imgs/{prefix}.png", rgb)
-    plt.imsave(f"{fpath}/imgs/{prefix}_bbox.png", rgb_with_bbox)
+    plt.imsave(f"{fpath}/imgs/{prefix}_bbox.png", bbox_img)
+
+    # embed()
+
+    mask = obs['seg_semantic'] == 0
+    mask_rgb = np.stack([mask, mask, mask], axis=-1)
+    rgb_white_bg = rgb
+    rgb_white_bg[mask_rgb] = 255.
+
+    plt.imsave(f"{fpath}/imgs/{prefix}_white_bg.png", rgb_white_bg)
     
     # process opened link here
     info[prefix] = {}
@@ -141,14 +152,20 @@ def dump_json(info, fpath="collected_data/small_sample/"):
     f.close()
 
 ######################## MAIN GENERATION FUNCTION ######################
-def generate(categories=["bottom_cabinet"], fpath="collected_data/test/"):
+def generate(categories=["bottom_cabinet"], fpath="collected_data/pipeline_test/"):
 
-    env, cam = create_env_with_light()
+    # env, cam = create_env_with_light()
+    env, cam = create_predefined_env()
+    embed()
 
     ########### Get all articulate objects ############
-    train_objects, test_objects = get_objects_by_categories(categories, use_avg_spec=False)
+    # train_objects = get_objects_by_categories(categories, use_avg_spec=None, is_train=True)
+    # train_objects = list(og.sim.scene.object_registry("category", "countertop"))
+    train_objects = og.sim.scene.object_registry("category", "top_cabinet")
+    train_objects = list(train_objects) if train_objects is not None else []
 
-    # embed()
+    embed()
+    # exit(0)
 
     info = {}
     count = 0
@@ -159,41 +176,44 @@ def generate(categories=["bottom_cabinet"], fpath="collected_data/test/"):
         os.makedirs(f"{fpath}/imgs/")
 
     # iterate through available objects
-    # for obj in train_objects:
-    #     if obj.name in ["cjcyed", "gvtucm", "leizjb", "olgoza", "phoesw"]: # bot_cab train
+    for obj in train_objects:
+        # if obj.name in ["cjcyed", "gvtucm", "leizjb", "olgoza", "phoesw"]: # bot_cab train
+        #     continue
+    # for obj in test_objects:
+    #     if obj.name in ["vespxk"]: # bot_cab test
     #         continue
-    for obj in test_objects:
-        if obj.name in ["vespxk"]: # bot_cab train
-            continue
-        try:
-            # insert obj into scene
-            og.sim.stop()
-            og.sim.import_object(obj)
-            og.sim.play()
-            # set right after insertion to avoid physical simulation issue
-            obj.set_position([0, 0, 0.15]) 
-            for _ in range(50): env.step([])
-            for _ in range(30): og.sim.render()
+        # try:
+        #     # insert obj into scene
+        #     og.sim.stop()
+        #     og.sim.import_object(obj)
+        #     obj.set_position([0, 0, 0.15]) 
+        #     og.sim.play()
+        #     # set right after insertion to avoid physical simulation issue
+        #     for _ in range(50): env.step([])
+        #     for _ in range(30): og.sim.render()
 
-        # some models may raise error for invalid articulation handle
-        except Exception as e:
-            og.log.info(f"AssertionError encountered, failed to import object {obj.name}")
-            og.log.info(f"{str(e)}")
-            og.sim.scene.remove_object(obj, og.sim)
-            embed()
-            continue
+        # # some models may raise error for invalid articulation handle
+        # except Exception as e:
+        #     og.log.info(f"AssertionError encountered, failed to import object {obj.name}")
+        #     og.log.info(f"{str(e)}")
+        #     og.sim.scene.remove_object(obj, og.sim)
+        #     embed()
+        #     continue
 
-        og.log.info(f"Successfully imported object {obj.name}")
+        # og.log.info(f"Successfully imported object {obj.name}")
+
+        # embed()
 
         # check if have original bbox
-        obs = cam.get_obs()
-        if len(obs['bbox_2d_loose']) == 0:
-            og.log.info(f"object {obj.name} has no original bboxes, skipped")
-            og.sim.scene.remove_object(obj)
-            continue
+        # obs = cam.get_obs()
+        # embed()
+        # if len(obs['bbox_2d_loose']) == 0:
+        #     og.log.info(f"object {obj.name} has no original bboxes, skipped")
+        #     og.sim.scene.remove_object(obj)
+        #     continue
 
         # num_open = min(max(2**(len(obj.links)-1), 10), 32)
-        itr_open = 10
+        itr_open = 3
         itr_close = 3
 
         # repeate several samples
@@ -215,28 +235,30 @@ def generate(categories=["bottom_cabinet"], fpath="collected_data/test/"):
 
             for _ in range(50): env.step([])
 
-            num_cam_pose = 10
+            num_cam_pose = 5
             for _ in range(num_cam_pose):
                 # sample camera pose
-                cam_pos = sample_cam_pose() + obj.get_position()
+                # cam_pos = sample_cam_pose() + obj.get_position()
+                cam_pos = sample_cam_pose(dist_low=1.5, dist_high=3) + obj.get_position()
                 set_camera_view(cam_pos, obj.get_position(), camera_prim_path="/World/viewer_camera", viewport_api=None)
                 for _ in range(30): og.sim.render()
 
                 # process the joint and get bbox for each opened link
                 # currently only full object bbox first
-                prefix = f"{obj.name}_{count}_{num_open}"
+                # prefix = f"{obj.name}_{count}_{num_open}"
+                prefix = f"{count}"
                 # info = save_obs(prefix, is_open, info, fpath=fpath, cam=cam)
 
                 if num_open > 0:
                     opened_links = ''.join([link.name for link in links])
                 else:
                     opened_links = ''
-                info = save_link_level_obs(obj, opened_links, prefix, info, fpath, cam)
+                info = save_link_level_obs(obj, opened_links, prefix, info, fpath, cam, keep_categories=None)
                 count += 1
 
         # remove object
-        og.sim.scene.remove_object(obj)
-        for _ in range(20): og.sim.render()
+        # og.sim.scene.remove_object(obj)
+        # for _ in range(20): og.sim.render()
 
     og.log.info("generation done, logging info to json")
     dump_json(info, fpath=fpath)
@@ -248,4 +270,6 @@ if __name__ == '__main__':
 
     # generate(categories=['bottom_cabinet_no_top', 'microwave', 'fridge', 'top_cabinet','bottom_cabinet'], fpath="collected_data/full_open_test_NEW/")
     # generate(categories=['microwave', 'fridge', 'top_cabinet'])
-    generate(categories=['bottom_cabinet'], fpath="collected_data/0406_bottom_cab_link_level_test/")
+    generate(categories=['bottom_cabinet'], 
+            #  fpath="collected_data/0417_bottom_cab_white_bg_train/"
+             )
