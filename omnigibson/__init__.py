@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import tempfile
+import atexit
 import signal
 import yaml
 import builtins
@@ -23,7 +24,7 @@ builtins.ISAAC_LAUNCHED_FROM_JUPYTER = (
 import nest_asyncio
 nest_asyncio.apply()
 
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 
 log.setLevel(logging.DEBUG if gm.DEBUG else logging.INFO)
 
@@ -81,6 +82,13 @@ def create_app():
     enable_extension("omni.flowusd")
     enable_extension("omni.particle.system.bundle")
     enable_extension("omni.kit.window.viewport")    # This is needed for windows
+
+    # Globally suppress certain logging modules (unless we're in debug mode) since they produce spurious warnings
+    if not gm.DEBUG:
+        import omni.log
+        log = omni.log.get_log()
+        for channel in ["omni.hydra.scene_delegate.plugin", "omni.kit.manipulator.prim.model"]:
+            log.set_channel_enabled(channel, False, omni.log.SettingBehavior.OVERRIDE)
 
     # Possibly hide windows if in debug mode
     if gm.GUI_VIEWPORT_ONLY:
@@ -177,25 +185,31 @@ def start():
 
 
 # Automatically start omnigibson's omniverse backend unless explicitly told not to
-if not (os.getenv("OMNIGIBSON_NO_OMNIVERSE", 'False').lower() in {'true', '1', 't'}):
+OMNIGIBSON_NO_OMNIVERSE = (os.getenv("OMNIGIBSON_NO_OMNIVERSE", 'False').lower() in {'true', '1', 't'})
+if not OMNIGIBSON_NO_OMNIVERSE:
     app, sim, Environment, REGISTERED_SCENES, REGISTERED_OBJECTS, REGISTERED_ROBOTS, REGISTERED_CONTROLLERS, \
         REGISTERED_TASKS, ALL_SENSOR_MODALITIES = start()
 
-# Create and expose a temporary directory for any use cases. It will get destroyed upon omni
-# shutdown by the shutdown function.
-tempdir = tempfile.mkdtemp()
+    # Create and expose a temporary directory for any use cases. It will get destroyed upon omni
+    # shutdown by the shutdown function.
+    tempdir = tempfile.mkdtemp()
 
 def shutdown():
-    global app
-    global sim
-    sim.clear()
-    shutil.rmtree(tempdir)
-    from omnigibson.utils.ui_utils import suppress_omni_log
-    log.info(f"{'-' * 10} Shutting Down {logo_small()} {'-' * 10}")
+    if not OMNIGIBSON_NO_OMNIVERSE:
+        global app
+        global sim
+        sim.clear()
+        # TODO: Currently tempfile removal will fail due to CopyPrim command (for example, GranularSystem in dicing_apple example.)
+        try:
+            shutil.rmtree(tempdir)
+        except PermissionError:
+            log.info("Permission error when removing temp files. Ignoring")
+        from omnigibson.utils.ui_utils import suppress_omni_log
+        log.info(f"{'-' * 10} Shutting Down {logo_small()} {'-' * 10}")
 
-    # Suppress carb warning here that we have no control over -- it's expected
-    with suppress_omni_log(channels=["carb"]):
-        app.close()
+        # Suppress carb warning here that we have no control over -- it's expected
+        with suppress_omni_log(channels=["carb"]):
+            app.close()
 
     exit(0)
 
@@ -203,3 +217,6 @@ def shutdown():
 def signal_handler(signal, frame):
     shutdown()
 signal.signal(signal.SIGINT, signal_handler)
+
+# register handler so that we always shut omiverse down correctly upon termination
+atexit.register(shutdown)

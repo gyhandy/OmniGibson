@@ -16,7 +16,6 @@ from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import CubicSpline
 from scipy.integrate import quad
 import omni
-import omni.ui
 import omni.log
 import carb
 import random
@@ -145,7 +144,7 @@ def suppress_omni_log(channels):
         # Do nothing
         pass
     elif channels is None:
-        # Globallly re-enable log
+        # Globally re-enable log
         log.enabled = True
     else:
         # Unsuppress the channels
@@ -259,7 +258,7 @@ class CameraMover:
     def __init__(self, cam, delta=0.25, save_dir=f"{og.root_path}/../images"):
         self.cam = cam
         self.delta = delta
-        self.light_val = 5e5
+        self.light_val = gm.FORCE_LIGHT_INTENSITY
         self.save_dir = save_dir
 
         self._appwindow = omni.appwindow.get_default_app_window()
@@ -393,6 +392,10 @@ class CameraMover:
         """
         # Create splines and their derivatives
         n_waypoints = len(waypoints)
+        if n_waypoints < 3:
+            og.log.error("Cannot generate trajectory from waypoints with less than 3 waypoints!")
+            return
+
         splines = [CubicSpline(range(n_waypoints), waypoints[:, i], bc_type='clamped') for i in range(3)]
         dsplines = [spline.derivative() for spline in splines]
 
@@ -715,11 +718,12 @@ class KeyboardRobotController:
             # Only handle the action if the value is specified
             if val is not None:
                 # If there is no index, the user is controlling a joint with "[" and "]"
-                if idx is None:
+                if idx is None and len(self.joint_command_idx) != 0:
                     idx = self.joint_command_idx[self.active_joint_command_idx_idx]
 
                 # Set the action
-                action[idx] = val
+                if idx is not None:
+                    action[idx] = val
 
         # Possibly set the persistent gripper action
         if len(self.binary_grippers) > 0 and self.keypress_mapping[carb.input.KeyboardInput.T]["val"] is not None:

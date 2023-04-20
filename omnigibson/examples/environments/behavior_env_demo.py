@@ -12,16 +12,16 @@ gm.ENABLE_OBJECT_STATES = True
 
 def main(random_selection=False, headless=False, short_exec=False):
     """
-    Generates a BEHAVIOR Task environment from a pre-defined configuration file.
+    Generates a BEHAVIOR Task environment in an online fashion.
 
     It steps the environment 100 times with random actions sampled from the action space,
     using the Gym interface, resetting it 10 times.
     """
-    og.log.info("*" * 80 + "\nDescription:" + main.__doc__ + "*" * 80)
+    og.log.info(f"Demo {__file__}\n    " + "*" * 80 + "\n    Description:\n" + main.__doc__ + "*" * 80)
 
     # Ask the user whether they want online object sampling or not
     sampling_options = {
-        False: "Use a pre-sampled cached BEHAVIOR activity scene",
+        # False: "Use a pre-sampled cached BEHAVIOR activity scene", # TODO: Add the file needed in dataset
         True: "Sample the BEHAVIOR activity in an online fashion",
     }
     should_sample = choose_from_options(options=sampling_options, name="online object sampling", random_selection=random_selection)
