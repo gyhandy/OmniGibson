@@ -190,7 +190,7 @@ def plot_all_bboxes(obj, cam, link=None):
     plt.show()
     # embed()
 
-def get_all_bboxes(obj, cam):
+def get_all_bboxes(obj, cam, bbox_obs=None, keep_categories=None):
     # obtain 3d bboxes and camera information
     all_3d_bboxes = get_all_link_3d_bboxes(obj)
     intrinsics = compute_intrinsics(cam, 1024)
@@ -209,7 +209,16 @@ def get_all_bboxes(obj, cam):
     obj_bbox = np.append(np.min(link_array_bboxes, axis=0)[:2], np.max(link_array_bboxes, axis=0)[2:])
     link_bboxes["object"] = obj_bbox
 
-    bbox_obs = cam.get_obs()["bbox_2d_loose"]
+    if bbox_obs is None:
+        bbox_obs = cam.get_obs()["bbox_2d_loose"]
+    # skip unwanted categories -- change to simpler way
+    # if keep_categories is not None:
+    #     from copy import deepcopy
+    #     refined_bbox_obs = deepcopy(bbox_obs[0])
+    #     for bbox in bbox_obs:
+    #         if list(bbox)[2] in keep_categories:
+    #             refined_bbox_obs = np.append(refined_bbox_obs, bbox)
+    #     bbox_obs = refined_bbox_obs[1:]
 
     if len(bbox_obs) == 0:
         og.log.info("No bbox obs, skipped")

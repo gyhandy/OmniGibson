@@ -23,7 +23,7 @@ NOT_USE_AVG_SPEC_CATEGORIES = ["bottom_cabinet"]
 SKIP_MODELS = {"bottom_cabinet":["cjcyed", "gvtucm", "leizjb", "olgoza", "phoesw", "vespxk"]}
 
 
-def get_all_available_by_category(category, use_avg_spec=None, unique_id=""):
+def get_all_available_by_category(category, use_avg_spec=None, unique_id=None):
     '''
     Returns (train, test), two list of DatasetObjects for all 
     available models in the specified category.
@@ -44,7 +44,10 @@ def get_all_available_by_category(category, use_avg_spec=None, unique_id=""):
     for i in range(len(all_models)): 
         if category in SKIP_MODELS and all_models[i] in SKIP_MODELS[category]:
             continue
-        name = f"{all_models[i]}_{unique_id}" # set name = model
+        if unique_id is None:
+            name = f"{all_models[i]}"
+        else:
+            name = f"{all_models[i]}_{unique_id}" # set name = model
         obj = DatasetObject(
             prim_path=f"/World/{name}",
             name=name,
