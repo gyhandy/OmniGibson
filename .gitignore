@@ -88,3 +88,6 @@ coverage.xml
 # Doc
 docs/reference
 site/
+
+# Collected data
+colleced_data/

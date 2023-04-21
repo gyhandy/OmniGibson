@@ -14,10 +14,12 @@ import omnigibson.utils.transform_utils as T
 # Utility imports
 from IPython import embed
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from omni.isaac.synthetic_utils.visualization import colorize_bboxes
 import numpy as np
 from itertools import product
 import copy
+import trimesh
 
 from omnigibson.utils.collectData.env_utils import (
     create_env_with_light, 
@@ -88,13 +90,28 @@ def compute_intrinsics(cam, img_width):
     return intrinsics
 
 
-def center_extent_to_xy_minmax_3d(center, extent):
+def center_extent_to_xy_minmax_3d(center, extent, orientation=np.array([0., 0., 0., 1.])):
     '''
     '''
     pts = []
-    center = np.array(center)
+    center = np.array(center)        
+    # Normalize the quaternion
+    q = trimesh.transformations.unit_vector(orientation)
+    
+    # Transform the quarternion from (x, y, z, w) to (w, x, y, z)
+    q = np.roll(q, shift=1)
+
+    # Create a transformation matrix from the quaternion
+    T = trimesh.transformations.quaternion_matrix(q)
+
     for p in product([-0.5, 0.5], repeat=3):
-        pts.append(center + np.array(extent) * np.array(p))
+        v = np.array(extent) * np.array(p)
+
+        # Transform the vector using the matrix
+        v_transformed = np.dot(T, np.hstack((v, 1)))[0:3]
+
+        pts.append(center + v_transformed)
+
     return pts
 
 
@@ -145,7 +162,7 @@ def add_bboxes_to_obs(bbox_obs, ref, bboxes):
         new_bbox = list(copy.deepcopy(ref))
         new_bbox[0] = cur_max_id + 1
         cur_max_id += 1
-        new_bbox[-4:] = bbox
+        new_bbox[1:5] = bbox
         bbox_obs = np.append(bbox_obs, np.array(tuple(new_bbox), dtype=ref.dtype))
 
     return bbox_obs
@@ -158,8 +175,8 @@ def get_all_link_3d_bboxes(obj):
     all_3d_bboxes = {}
 
     for link_name in link_names:
-        center, _, extent, _ = obj.get_base_aligned_bbox(link_name=link_name, visual=True, xy_aligned=True, fallback_to_aabb=False, link_bbox_type="axis_aligned")
-        pts = center_extent_to_xy_minmax_3d(center, extent)
+        center, orientation, extent, _ = obj.get_base_aligned_bbox(link_name=link_name, visual=True, xy_aligned=True, fallback_to_aabb=False, link_bbox_type="axis_aligned")
+        pts = center_extent_to_xy_minmax_3d(center, extent, orientation)
         all_3d_bboxes[link_name] = pts
 
     return all_3d_bboxes
@@ -185,12 +202,20 @@ def plot_all_bboxes(obj, cam, link=None):
     ref = bbox_obs[0]
     bbox_obs = add_bboxes_to_obs(bbox_obs, ref, bboxes)
 
-    img = colorize_bboxes(bboxes_2d_data=bbox_obs, bboxes_2d_rgb=cam.get_obs()["rgb"], num_channels=4)
-    plt.imshow(img)
-    plt.show()
+    plot_bbox_on_rgb(bbox_obs, cam.get_obs()["rgb"], fpath=None, is_minmax=True)
+
+    # img = colorize_bboxes(bboxes_2d_data=bbox_obs, bboxes_2d_rgb=cam.get_obs()["rgb"], num_channels=4)
+    # plt.imshow(img)
+    # plt.show()
     # embed()
 
-def get_all_bboxes(obj, cam, bbox_obs=None, keep_categories=None):
+def get_all_bboxes(obj, cam, bbox_obs=None, img_fpath=None):
+    '''
+    obj: the DatasetObject to get all bbox for its links
+    cam: viewer camera
+    bbox_obs: original bbox obs FOR THIS OBJECT -- will append link bbox to it
+    img_fpath: path to save the rgb image. Default is None.
+    '''
     # obtain 3d bboxes and camera information
     all_3d_bboxes = get_all_link_3d_bboxes(obj)
     intrinsics = compute_intrinsics(cam, 1024)
@@ -211,31 +236,27 @@ def get_all_bboxes(obj, cam, bbox_obs=None, keep_categories=None):
 
     if bbox_obs is None:
         bbox_obs = cam.get_obs()["bbox_2d_loose"]
-    # skip unwanted categories -- change to simpler way
-    # if keep_categories is not None:
-    #     from copy import deepcopy
-    #     refined_bbox_obs = deepcopy(bbox_obs[0])
-    #     for bbox in bbox_obs:
-    #         if list(bbox)[2] in keep_categories:
-    #             refined_bbox_obs = np.append(refined_bbox_obs, bbox)
-    #     bbox_obs = refined_bbox_obs[1:]
 
     if len(bbox_obs) == 0:
         og.log.info("No bbox obs, skipped")
         return None
+    
     ref = bbox_obs[0]
     bbox_obs = add_bboxes_to_obs(bbox_obs, ref, list(link_bboxes.values()))
 
-    bbox_img = colorize_bboxes(bboxes_2d_data=bbox_obs[1:], bboxes_2d_rgb=cam.get_obs()["rgb"], num_channels=4)
+    # if img_fpath is None:
+    #     og.log.info("Not saving bbox image")
+    # else:
+    # # bbox_img = colorize_bboxes(bboxes_2d_data=bbox_obs[1:], bboxes_2d_rgb=cam.get_obs()["rgb"], num_channels=4)
+    #     plot_bbox_on_rgb(bboxes=bbox_obs[1:], rgb=cam.get_obs()["rgb"], fpath=img_fpath, is_minmax=True)
 
     # TODO: rconvert xyminmax to cornerextent
     for key in link_bboxes:
         orig = link_bboxes[key]
         link_bboxes[key] = ((int(orig[0]), int(orig[1])),(int(orig[2]-orig[0]), int(orig[3]-orig[1])))
-    # print(link_bboxes)
-    # plt.imshow(bbox_img)
-    # plt.show()
-    return link_bboxes, bbox_img
+
+    # return link_bboxes, bbox_img
+    return link_bboxes, bbox_obs[1:]
 
 def new_get_all_bboxes(obj, cam):
     # obtain 3d bboxes and camera information
@@ -281,6 +302,40 @@ def xy_minmax_to_center_extend_2d(orig):
     return ((int(orig[0]), int(orig[1])),(int(orig[2]-orig[0]), int(orig[3]-orig[1])))
 
 
+def plot_bbox_on_rgb(bboxes, rgb, fpath, is_minmax=True):
+    # This method is written for the new form of bbox observation
+    # ('semanticId', '<u4'), ('x_min', '<i4'), ('y_min', '<i4'), ('x_max', '<i4'), ('y_max', '<i4'), ('occlusionRatio', '<f4')
+    # if is_minmax is False, indicating original position for x_max, y_max now have x_extent, y_extent
+
+    # Create a figure and axes
+    fig, ax = plt.subplots()
+
+    # Display the image
+    ax.imshow(rgb)
+
+    # Draw a rectangle
+    i = 0
+    colors = ["red", "blue", "yellow", "green", "black", "purple", "gray"]
+    for bbox in bboxes:
+        (x_min, y_min) = (bbox[1], bbox[2])
+        if is_minmax:
+            x_extent, y_extent = bbox[3]-bbox[1], bbox[4]-bbox[2]
+        else:
+            x_extent, y_extent = bbox[3], bbox[4]
+        rect = patches.Rectangle((x_min, y_min), x_extent, y_extent, linewidth=1, edgecolor=colors[i], facecolor='none')
+        i+=1
+        i = i % len(colors)
+
+        # Add the rectangle to the axes
+        ax.add_patch(rect)
+
+    # Save the figure to a PNG file
+    plt.savefig(fpath)
+    # plt.imsave(fpath, rgb)
+    # plt.show()
+
+    plt.close(fig)
+
 if __name__ == '__main__':
     ########## Initiate env and camera #########
     # #model="lwjdmj",##############
@@ -289,27 +344,36 @@ if __name__ == '__main__':
     cab0, cab1, cupcake, laptop, table, shirt, carpet = basic_objects()
     train, test = get_all_available_by_category('bottom_cabinet', use_avg_spec=False)
 
-    for obj in train:
-        og.sim.stop()
-        og.sim.import_object(obj)
-        og.sim.play()
-        for _ in range(30): og.sim.step()
+    og.sim.stop()
+    og.sim.import_object(cab0)
+    og.sim.play()
+    for _ in range(30): og.sim.step()
 
-        embed()
+    embed()
+    env.close()
+    
 
-        og.sim.stop()
-        scene = Scene()
-        og.sim.import_scene(scene)
-        og.sim.viewer_camera.add_modality('bbox_2d_loose')
-        cam = VisionSensor(
-            prim_path="/World/viewer_camera",
-            name="camera",
-            modalities=["rgb", "seg_instance","bbox_2d_loose", "bbox_2d_tight"], #"depth_linear", "seg_instance", "bbox_2d_tight", "bbox_3d", "camera"],
-            image_height=1024,
-            image_width=1024,
-        )
-        cam.initialize()
-        og.sim.enable_viewer_camera_teleoperation()
+    # for obj in train:
+    #     og.sim.stop()
+    #     og.sim.import_object(obj)
+    #     og.sim.play()
+    #     for _ in range(30): og.sim.step()
+
+    #     embed()
+
+    #     og.sim.stop()
+    #     scene = Scene()
+    #     og.sim.import_scene(scene)
+    #     og.sim.viewer_camera.add_modality('bbox_2d_loose')
+    #     cam = VisionSensor(
+    #         prim_path="/World/viewer_camera",
+    #         name="camera",
+    #         modalities=["rgb", "seg_instance","bbox_2d_loose", "bbox_2d_tight"], #"depth_linear", "seg_instance", "bbox_2d_tight", "bbox_3d", "camera"],
+    #         image_height=1024,
+    #         image_width=1024,
+    #     )
+    #     cam.initialize()
+    #     og.sim.enable_viewer_camera_teleoperation()
 
         # vespxk
         # ujniob, ybntlp
