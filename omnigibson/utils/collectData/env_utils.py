@@ -85,15 +85,17 @@ def create_env_with_light():
 
     return env, cam
 
-def create_predefined_env(env_id=3):
+def create_predefined_env(scene_id=3):
     scenes = get_available_og_scenes()
     scene_type = "InteractiveTraversableScene"
-    scene_model = list(scenes)[env_id]
+    scene_model = list(scenes)[scene_id]
+    # print(scene_id)
+    # exit(0)
     cfg = {
         "scene": {
             "type": scene_type,
             "scene_model": scene_model,
-            "load_object_categories": ["floors", "top_cabinet"], # ["floors", "walls", "countertop", "breakfast_table", "bottom_cabinet", "top_cabinet"]
+            "load_object_categories": ["floors", "walls", "top_cabinet", "countertop", "breakfast_table", "bottom_cabinet", "fridge", "microwave", "picture"], 
         },
     }
     env = og.Environment(cfg)
@@ -103,7 +105,7 @@ def create_predefined_env(env_id=3):
     cam = VisionSensor(
             prim_path="/World/viewer_camera",
             name="camera",
-            modalities=["rgb", "bbox_2d_loose", "bbox_2d_tight", "seg_semantic"], #"depth_linear", "seg_instance", "bbox_2d_tight", "bbox_3d", "camera"],
+            modalities=["rgb", "bbox_2d_loose", "bbox_2d_tight", "seg_semantic", "seg_instance"], #"depth_linear", "seg_instance", "bbox_2d_tight", "bbox_3d", "camera"],
             image_height=1024,
             image_width=1024,
         )
@@ -119,15 +121,15 @@ def sample_cam_pose(yaw_low=-np.pi, yaw_high=0, dist_low=2.5, dist_high=4.5, pit
     Helper function to saple a random camera pose.
     Later used to let cam focus on given object.
     '''
-    # camera_yaw = np.random.uniform(yaw_low, yaw_high)
-    camera_yaw = clipped_normal_sample(yaw_low, yaw_high)
+    camera_yaw = np.random.uniform(yaw_low, yaw_high)
+    # camera_yaw = clipped_normal_sample(yaw_low, yaw_high)
     camera_dist = np.random.uniform(dist_low, dist_high)
     # camera_pitch = np.random.uniform(low=pitch_low, high=pitch_high)
     camera_pitch = clipped_normal_sample(pitch_low, pitch_high)
     target_to_camera = R.from_euler("yz", [camera_pitch, camera_yaw]).apply([1, 0, 0])
     raw_camera_pos = target_to_camera * camera_dist
 
-    return raw_camera_pos
+    return (raw_camera_pos, camera_yaw)
 
 def clipped_normal_sample(low, high):
     '''
