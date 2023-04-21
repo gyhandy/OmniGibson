@@ -30,6 +30,7 @@ from omni.isaac.synthetic_utils import SyntheticDataHelper
 from omnigibson.utils.constants import PrimType
 from omnigibson.object_states import Open, OnTop, Inside, Folded, Unfolded, Overlaid
 import omnigibson.utils.transform_utils as T
+from omnigibson.utils.usd_utils import SemanticsAPI
 
 # Utility imports
 from IPython import embed
@@ -39,12 +40,20 @@ import json
 from omnigibson.utils.collectData.openable_obj import (
     get_objects_by_categories,
 )
-from omnigibson.utils.collectData.bbox_utils import get_all_bboxes
+from omnigibson.utils.collectData.bbox_utils import (
+    get_all_bboxes,
+    plot_bbox_on_rgb
+)
 from omnigibson.utils.collectData.env_utils import (
     create_env_with_light,
     create_predefined_env,
     sample_cam_pose,
 )
+from omnigibson.utils.collectData.filter_utils import (
+    check_visible
+)
+
+import argparse
 
 # gm global vars
 # gm.USE_GPU_DYNAMICS = False
@@ -93,7 +102,7 @@ def save_obs(prefix, is_open, info, fpath="collected_data/small_sample/", cam=No
     info[prefix] = {"bbox_loose":(left_corner_loose, span_loose), "is_open":is_open}
     return info
 
-def save_link_level_obs(obj, opened_links, prefix, info, fpath="collected_data/small_sample/", cam=None, keep_categories=['bottom_cabinet', 'top_cabinet']):
+def save_link_level_obs(obj, obj_id, opened_links, prefix, info, fpath="collected_data/small_sample/", cam=None):
     '''
     Helper function to save current obs to fig
     obj: DatasetObject -- TODO: extend for multiple objects
@@ -112,29 +121,42 @@ def save_link_level_obs(obj, opened_links, prefix, info, fpath="collected_data/s
 
     if len(obs["bbox_2d_tight"]) == 0:
         # not visible, don't save
-        og.log.info("no bbox, returning")
+        og.log.info("no bbox, skipping")
         return info
     
     # TODO: select only wanted object in bbox
-    bbox_obs = obs["bbox_2d_loose"]
-    bbox_obs = [ob for ob in bbox_obs if f"/World/{obj.name}" in ob[1]]
-    link_bboxes, bbox_img = get_all_bboxes(obj, cam, bbox_obs=bbox_obs, keep_categories=keep_categories)
+    raw_bbox_obs = cam._annotators["bbox_2d_loose"].get_data()
+    bbox_obs = [raw_bbox_obs['data'][i] for i in range(len(raw_bbox_obs['data'])) if f"/World/{obj.name}" in raw_bbox_obs["info"]["primPaths"][i]]
+    
+    # bbox_obs = obs["bbox_2d_loose"]
+    # bbox_obs = [ob for ob in bbox_obs if f"/World/{obj.name}" in ob[1]]
+    link_bboxes, bbox_obs = get_all_bboxes(obj, cam, bbox_obs=bbox_obs, img_fpath=f"{fpath}/imgs/{prefix}_bbox.png")
+
+    # TODO: check visibility here
+    min_ratio = check_visible(obs["seg_instance"], obj_id, bbox_obs)
+    print(prefix, min_ratio)
+    if min_ratio < 0.2:
+        og.log.info("Not all links properly visible, skipping")
+        return info
 
     rgb = obs["rgb"][:, :, :3]
     plt.imsave(f"{fpath}/imgs/{prefix}.png", rgb)
-    plt.imsave(f"{fpath}/imgs/{prefix}_bbox.png", bbox_img)
+    # plt.imsave(f"{fpath}/imgs/{prefix}_seg.png", obs["seg_instance"]==obj_id)
+    plot_bbox_on_rgb(bboxes=bbox_obs, rgb=rgb, fpath=f"{fpath}/imgs/{prefix}_bbox.png", is_minmax=True)
+    # plt.imsave(f"{fpath}/imgs/{prefix}_bbox.png", bbox_img)
 
     # embed()
 
-    mask = obs['seg_semantic'] == 0
-    mask_rgb = np.stack([mask, mask, mask], axis=-1)
-    rgb_white_bg = rgb
-    rgb_white_bg[mask_rgb] = 255.
+    # mask = obs['seg_semantic'] == 0
+    # mask_rgb = np.stack([mask, mask, mask], axis=-1)
+    # rgb_white_bg = rgb
+    # rgb_white_bg[mask_rgb] = 255.
 
-    plt.imsave(f"{fpath}/imgs/{prefix}_white_bg.png", rgb_white_bg)
+    # plt.imsave(f"{fpath}/imgs/{prefix}_white_bg.png", rgb_white_bg)
     
     # process opened link here
     info[prefix] = {}
+    info[prefix]["min_link_visible_ratio"] = min_ratio
     for key in link_bboxes:
         info[prefix][key] = {}
         info[prefix][key]["bbox"] = link_bboxes[key] # bbox in corner-extent format
@@ -152,19 +174,29 @@ def dump_json(info, fpath="collected_data/small_sample/"):
     f.close()
 
 ######################## MAIN GENERATION FUNCTION ######################
-def generate(categories=["bottom_cabinet"], fpath="collected_data/pipeline_test/"):
+def generate(scene_id=0, fpath="collected_data/pipeline_test/"):
 
     # env, cam = create_env_with_light()
-    env, cam = create_predefined_env()
-    embed()
+    env, cam = create_predefined_env(scene_id)
+    sem_api = SemanticsAPI()
+    # embed()
 
     ########### Get all articulate objects ############
-    # train_objects = get_objects_by_categories(categories, use_avg_spec=None, is_train=True)
-    # train_objects = list(og.sim.scene.object_registry("category", "countertop"))
-    train_objects = og.sim.scene.object_registry("category", "top_cabinet")
-    train_objects = list(train_objects) if train_objects is not None else []
+    
+    cab_objects = og.sim.scene.object_registry("category", "top_cabinet")
+    train_objects = list(cab_objects) if cab_objects is not None else []
+    cab_objects = og.sim.scene.object_registry("category", "bottom_cabinet")
+    train_objects += list(cab_objects) if cab_objects is not None else []
 
-    embed()
+    ceiling_objects = og.sim.scene.object_registry("category", "ceilings")
+    ceiling_objects = list(ceiling_objects) if ceiling_objects is not None else []
+    for ceiling in ceiling_objects:
+        og.sim.scene.remove_object(ceiling)
+    for _ in range(50): og.sim.step()
+
+    instance_map = sem_api.get_instance_mapping()
+
+    # embed()
     # exit(0)
 
     info = {}
@@ -177,52 +209,40 @@ def generate(categories=["bottom_cabinet"], fpath="collected_data/pipeline_test/
 
     # iterate through available objects
     for obj in train_objects:
-        # if obj.name in ["cjcyed", "gvtucm", "leizjb", "olgoza", "phoesw"]: # bot_cab train
-        #     continue
-    # for obj in test_objects:
-    #     if obj.name in ["vespxk"]: # bot_cab test
-    #         continue
-        # try:
-        #     # insert obj into scene
-        #     og.sim.stop()
-        #     og.sim.import_object(obj)
-        #     obj.set_position([0, 0, 0.15]) 
-        #     og.sim.play()
-        #     # set right after insertion to avoid physical simulation issue
-        #     for _ in range(50): env.step([])
-        #     for _ in range(30): og.sim.render()
+        obj_id = instance_map[f"/World/{obj.name}"]
 
-        # # some models may raise error for invalid articulation handle
-        # except Exception as e:
-        #     og.log.info(f"AssertionError encountered, failed to import object {obj.name}")
-        #     og.log.info(f"{str(e)}")
-        #     og.sim.scene.remove_object(obj, og.sim)
-        #     embed()
-        #     continue
+        # 0421 Temporarily skip all prismatic joints
+        has_prismatic_joint = False
+        has_revolute_joint = False
+        for joint_name in obj.joints:
+            if "Prismatic" in obj.joints[joint_name].joint_type:
+                has_prismatic_joint = True
+            else:
+                has_revolute_joint = True
 
-        # og.log.info(f"Successfully imported object {obj.name}")
+        if has_prismatic_joint:
+            og.log.info(f"object {obj.name} has prismatic joints, skipping")
+            continue
+        
+        # itr_open = 6
+        # itr_close = 3
+        itr_open = 1
+        itr_close = 1
 
-        # embed()
-
-        # check if have original bbox
-        # obs = cam.get_obs()
-        # embed()
-        # if len(obs['bbox_2d_loose']) == 0:
-        #     og.log.info(f"object {obj.name} has no original bboxes, skipped")
-        #     og.sim.scene.remove_object(obj)
-        #     continue
-
-        # num_open = min(max(2**(len(obj.links)-1), 10), 32)
-        itr_open = 3
-        itr_close = 3
+        # keep track of visible ratio to find best angle for object
+        best_yaw = -np.pi
+        best_visible = 0
 
         # repeate several samples
         for itr in range(itr_open + itr_close):
             print(obj.name, itr, itr_open)
             if itr < itr_open: 
                 obj.states[Open].set_value(False)
-                success, links = obj.states[Open].set_value(True, fully=True)
+                success, links = obj.states[Open].set_value(True, fully=False)
                 og.log.info(f"finished articulation, Opening {success}, Opened {len(links)} links")
+                if not obj.states[Open].get_value():
+                    og.log.info(f"Artibulation check failed, continue")
+                    continue
                 num_open = len(links)
 
             else:
@@ -235,30 +255,39 @@ def generate(categories=["bottom_cabinet"], fpath="collected_data/pipeline_test/
 
             for _ in range(50): env.step([])
 
-            num_cam_pose = 5
-            for _ in range(num_cam_pose):
-                # sample camera pose
-                # cam_pos = sample_cam_pose() + obj.get_position()
-                cam_pos = sample_cam_pose(dist_low=1.5, dist_high=3) + obj.get_position()
+            num_cam_pose = 22
+            yaws = np.linspace(-np.pi, np.pi, 19)
+            
+            for p in range(num_cam_pose):
+                # rotate around object
+                if p < 18 and itr == 0:
+                    cam_pos, cam_yaw = sample_cam_pose(dist_low=1.5, dist_high=1.5, yaw_low=yaws[p], yaw_high=yaws[p+1])
+                    cam_pos += obj.get_position()
+                else:
+                    cam_pos, _ = sample_cam_pose(dist_low=1, dist_high=3, yaw_low=best_yaw-np.pi/6, yaw_high=best_yaw+np.pi/6)
+                    cam_pos += obj.get_position()
+
                 set_camera_view(cam_pos, obj.get_position(), camera_prim_path="/World/viewer_camera", viewport_api=None)
                 for _ in range(30): og.sim.render()
 
                 # process the joint and get bbox for each opened link
-                # currently only full object bbox first
-                # prefix = f"{obj.name}_{count}_{num_open}"
                 prefix = f"{count}"
-                # info = save_obs(prefix, is_open, info, fpath=fpath, cam=cam)
 
                 if num_open > 0:
                     opened_links = ''.join([link.name for link in links])
                 else:
                     opened_links = ''
-                info = save_link_level_obs(obj, opened_links, prefix, info, fpath, cam, keep_categories=None)
-                count += 1
+                info = save_link_level_obs(obj, obj_id, opened_links, prefix, info, fpath, cam)
 
-        # remove object
-        # og.sim.scene.remove_object(obj)
-        # for _ in range(20): og.sim.render()
+                # help find the best camera yaw 
+                if p < 18:
+                    if prefix in info and best_visible - 0.05 < info[prefix]["min_link_visible_ratio"]:
+                        best_visible = info[prefix]["min_link_visible_ratio"]
+                        best_yaw = cam_yaw
+
+                count += 1
+            
+            dump_json(info, fpath=fpath)
 
     og.log.info("generation done, logging info to json")
     dump_json(info, fpath=fpath)
@@ -266,10 +295,10 @@ def generate(categories=["bottom_cabinet"], fpath="collected_data/pipeline_test/
     env.close()
 
 if __name__ == '__main__':
-    # embed()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scene_id", type=int, default=0)
+    args = parser.parse_args()
 
-    # generate(categories=['bottom_cabinet_no_top', 'microwave', 'fridge', 'top_cabinet','bottom_cabinet'], fpath="collected_data/full_open_test_NEW/")
-    # generate(categories=['microwave', 'fridge', 'top_cabinet'])
-    generate(categories=['bottom_cabinet'], 
-            #  fpath="collected_data/0417_bottom_cab_white_bg_train/"
+    generate(scene_id = args.scene_id,
+             fpath=f"collected_data/0421_rev_only_train/scene_{args.scene_id}/"
              )
