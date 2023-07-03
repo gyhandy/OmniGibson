@@ -48,6 +48,7 @@ def sample_kinematics(
     max_trials=10,
     z_offset=0.05,
     skip_falling=False,
+    sample_link_name=None,
 ):
     """
     Samples the given @predicate kinematic state for @objA with respect to @objB
@@ -62,6 +63,7 @@ def sample_kinematics(
         max_trials (int): Number of attempts for sampling
         z_offset (float): Z-offset to apply to the sampled pose
         skip_falling (bool): Whether to let @objA fall after its position is sampled or not
+        (Yihe added)sample_link_name (str): if only sampling for specific link in objB (used for Inside)
 
     Returns:
         bool: True if successfully sampled, else False
@@ -153,6 +155,30 @@ def sample_kinematics(
                     undo_cuboid_bottom_padding=True,
                     max_angle_with_z_axis=0.17,
                     hit_proportion=0.0,  # rays will NOT hit the object itself, but the surface below it.
+                )
+            elif predicate == "onTop":
+                sampling_results = sampling_utils.sample_cuboid_on_object_symmetric_bimodal_distribution(
+                    objB,
+                    num_samples=1,
+                    axis_probabilities=[0, 0, 1],
+                    cuboid_dimensions=parallel_bbox_extents,
+                    refuse_downwards=True,
+                    undo_cuboid_bottom_padding=True,
+                    max_angle_with_z_axis=0.17,
+                    sample_link_name=objB.root_link_name,
+                    **params,
+                )
+            elif predicate == "inside" and sample_link_name is not None:
+                sampling_results = sampling_utils.sample_cuboid_on_object_symmetric_bimodal_distribution(
+                    objB,
+                    num_samples=1,
+                    axis_probabilities=[0, 0, 1],
+                    cuboid_dimensions=parallel_bbox_extents,
+                    refuse_downwards=True,
+                    undo_cuboid_bottom_padding=True,
+                    max_angle_with_z_axis=0.17,
+                    sample_link_name=sample_link_name,
+                    **params,
                 )
             else:
                 sampling_results = sampling_utils.sample_cuboid_on_object_symmetric_bimodal_distribution(

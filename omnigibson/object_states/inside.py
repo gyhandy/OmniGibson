@@ -14,14 +14,15 @@ class Inside(KinematicsMixin, RelativeObjectState, BooleanState):
     def get_dependencies():
         return KinematicsMixin.get_dependencies() + [AABB, HorizontalAdjacency, VerticalAdjacency]
 
-    def _set_value(self, other, new_value):
+    def _set_value(self, other, new_value, sample_link_name=None):
         if not new_value:
             raise NotImplementedError("Inside does not support set_value(False)")
 
         state = og.sim.dump_state(serialized=False)
 
-        for _ in range(10):
-            if sample_kinematics("inside", self.obj, other) and self.get_value(other):
+        # for _ in range(10):
+        for _ in range(3): # Yihe 0425 improve sampling effeciency
+            if sample_kinematics("inside", self.obj, other, sample_link_name=sample_link_name) and self.get_value(other):
                 return True
             else:
                 og.sim.load_state(state, serialized=False)

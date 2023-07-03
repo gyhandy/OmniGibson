@@ -380,6 +380,7 @@ def sample_raytest_start_end_symmetric_bimodal_distribution(
     axis_probabilities,
     aabb_offset=m.DEFAULT_AABB_OFFSET,
     max_sampling_attempts=m.DEFAULT_MAX_SAMPLING_ATTEMPTS,
+    sample_link_name=None,
 ):
     """
     Sample the start points and end points around a given object by a symmetric bimodal distribution
@@ -401,7 +402,10 @@ def sample_raytest_start_end_symmetric_bimodal_distribution(
             - (n, s, 3)-array: (num_samples, max_sampling_attempts, 3) shaped array representing the end points for
                 raycasting defined in the world frame
     """
-    bbox_center, bbox_orn, bbox_bf_extent, _ = obj.get_base_aligned_bbox(xy_aligned=True, fallback_to_aabb=True)
+    if sample_link_name is None:
+        bbox_center, bbox_orn, bbox_bf_extent, _ = obj.get_base_aligned_bbox(xy_aligned=True, fallback_to_aabb=True)
+    else:
+        bbox_center, bbox_orn, bbox_bf_extent, _ = obj.get_base_aligned_bbox(xy_aligned=True, fallback_to_aabb=True, link_name=sample_link_name)
     half_extent_with_offset = (bbox_bf_extent / 2) + aabb_offset
 
     start_points = np.zeros((num_samples, max_sampling_attempts, 3))
@@ -502,6 +506,7 @@ def sample_cuboid_on_object_symmetric_bimodal_distribution(
     undo_cuboid_bottom_padding=True,
     verify_cuboid_empty=True,
     refuse_downwards=False,
+    sample_link_name=None,
 ):
     """
     Samples points on an object's surface using ray casting.
@@ -558,6 +563,7 @@ def sample_cuboid_on_object_symmetric_bimodal_distribution(
         axis_probabilities,
         aabb_offset=aabb_offset,
         max_sampling_attempts=max_sampling_attempts,
+        sample_link_name=sample_link_name
     )
     return sample_cuboid_on_object(
         obj,

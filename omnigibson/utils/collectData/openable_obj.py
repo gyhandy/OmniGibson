@@ -13,6 +13,7 @@ from omni.isaac.core.utils.viewports import set_camera_view
 from omni.isaac.synthetic_utils.visualization import colorize_bboxes
 import matplotlib.pyplot as plt
 from omnigibson.object_states import Open
+import random
 
 gm.ENABLE_OBJECT_STATES = True
 gm.ENABLE_GLOBAL_CONTACT_REPORTING = True
@@ -23,7 +24,7 @@ NOT_USE_AVG_SPEC_CATEGORIES = ["bottom_cabinet"]
 SKIP_MODELS = {"bottom_cabinet":["cjcyed", "gvtucm", "leizjb", "olgoza", "phoesw", "vespxk"]}
 
 
-def get_all_available_by_category(category, use_avg_spec=None, unique_id=None):
+def get_all_available_by_category(category, is_train, use_avg_spec=None, unique_id=None, abilities={}):
     '''
     Returns (train, test), two list of DatasetObjects for all 
     available models in the specified category.
@@ -33,9 +34,6 @@ def get_all_available_by_category(category, use_avg_spec=None, unique_id=None):
     all_models = get_object_models_of_category(category)
     train = []
     test = []
-    if all_models == 1:
-        og.log.info(f"Only one model available for {category}, skipping!")
-        return train, test
     
     if use_avg_spec is None:
         use_avg_spec = category not in NOT_USE_AVG_SPEC_CATEGORIES
@@ -54,8 +52,14 @@ def get_all_available_by_category(category, use_avg_spec=None, unique_id=None):
             category=category,
             model=all_models[i],
             fit_avg_dim_volume=use_avg_spec,
+            abilities=abilities,
         )
-        if i < len(all_models) * 0.6 and i != len(all_models)-1:
+        if len(all_models) == 1:
+            if is_train: train.append(obj)
+            else: test.append(obj)
+            return train, test
+        
+        elif i < len(all_models) * 0.6:
             train.append(obj)
         else:
             test.append(obj)
@@ -67,15 +71,58 @@ def get_objects_by_categories(categories, use_avg_spec=None, is_train=True, uniq
     train = []
     test = []
     for category in categories:
-        cur_train, cur_test = get_all_available_by_category(category, use_avg_spec, unique_id )
+        cur_train, cur_test = get_all_available_by_category(category, is_train, use_avg_spec, unique_id )
         train += cur_train
         test += cur_test
+        if (is_train and len(cur_train) > 30) or (not is_train and len(cur_test) > 30):
+            break
         og.log.info(f"Collected category {category}, {len(cur_train)} training, {len(cur_test)} testing objects")
 
     if is_train:
         return train
     else:
         return test
+    
+def get_scene_objects_by_categories(categories):
+    '''
+    Obtains all objects in predefined scene in specified categories
+    '''
+    objects = []
+    for category in categories:
+        cur_cat = og.sim.scene.object_registry("category", category)
+        objects += list(cur_cat) if cur_cat is not None else []
+
+    return objects
+
+def get_all_place_objects(is_train=True, unique_id = ""):
+    small_place_categories = []
+    place_categories = []
+
+    for cat in get_all_object_categories():
+        metadata = get_og_avg_category_specs().get(cat)
+        if metadata is None or metadata["size"] is None or metadata["mass"] is None:
+            print(cat)
+            continue
+        size = max(metadata["size"])
+        weight = metadata['mass']
+
+        if size < 0.3 and size > 0.05 and weight < 5:
+            place_categories.append(cat)
+        if size < 0.3 and size > 0.05:
+            small_place_categories.append(cat)
+
+    train_place_categories = place_categories[:int(0.7*len(place_categories))]
+    test_place_categories = place_categories[int(0.7*len(place_categories)):]
+    if is_train:
+        random.shuffle(train_place_categories)
+        place_objects = get_objects_by_categories(train_place_categories, True, is_train, unique_id)
+    else:
+        random.shuffle(test_place_categories)
+        place_objects = get_objects_by_categories(test_place_categories, True, is_train, unique_id)
+    random.shuffle(place_objects)
+    place_objects = place_objects[:20]
+
+    return place_objects, small_place_categories
 
 def show_obs(obs):
     rgb = obs["rgb"][:, :, :3]
@@ -90,7 +137,7 @@ def show_obs(obs):
 
 
 if __name__ == '__main__':
-    train, test = get_all_available_by_category("bottom_cabinet")
+    # train, test = get_all_available_by_category("bottom_cabinet")
     embed()
     exit(0)
 

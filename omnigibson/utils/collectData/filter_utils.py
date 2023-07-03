@@ -31,7 +31,7 @@ gm.ENABLE_OBJECT_STATES = True
 gm.ENABLE_GLOBAL_CONTACT_REPORTING = True
 
 
-def check_visible(seg_instance, obj_id, bboxes, threshold_ratio=0.5):
+def check_visible(seg_instance, obj_id, bboxes):
     '''
     Checks if all links (that have bbox we are interested in) are visible.
     Heuristic: object segmentation must cover at least half pixels in every link bbox
@@ -39,6 +39,10 @@ def check_visible(seg_instance, obj_id, bboxes, threshold_ratio=0.5):
     '''
     # print(len(bboxes))
     min_ratio = 1
+    if bboxes is None:
+        og.log.info("No bboxes provided")
+        return 0
+    
     for bbox in bboxes:
         bbox_size = (bbox[3]-bbox[1])*(bbox[4]-bbox[2]) 
         if bbox_size == 0:
@@ -46,10 +50,6 @@ def check_visible(seg_instance, obj_id, bboxes, threshold_ratio=0.5):
         # This is so xxxxxxx tricky. Need to select the y indicies first!
         pixel_count = np.sum(seg_instance[bbox[2]:bbox[4]+1, bbox[1]:bbox[3]+1] == obj_id)
         min_ratio = min(min_ratio, (pixel_count/bbox_size))
-        # if pixel_count/bbox_size < threshold_ratio:
-        #     return False
-        # if min_ratio == 0:
-        #     embed()
         
     return min_ratio
     

@@ -8,9 +8,10 @@ import os
 # OmniGibson imports
 import omnigibson as og
 from omnigibson.utils.ui_utils import choose_from_options
-from omnigibson.objects import DatasetObject
+from omnigibson.objects import DatasetObject, LightObject
 from omnigibson.utils.asset_utils import (
     get_available_og_scenes,
+    get_available_g_scenes,
     get_all_object_categories,
     get_og_avg_category_specs,
     get_object_models_of_category,
@@ -21,8 +22,9 @@ from omnigibson.sensors import VisionSensor
 from omni.isaac.core.utils.viewports import set_camera_view
 from omni.isaac.synthetic_utils import SyntheticDataHelper
 from omnigibson.utils.constants import PrimType
-from omnigibson.object_states import Open, OnTop, Inside, Folded, Unfolded, Overlaid
+from omnigibson.object_states import Open, OnTop, Inside, Folded, Unfolded, Overlaid, Filled
 import omnigibson.utils.transform_utils as T
+import trimesh
 
 # Utility imports
 from IPython import embed
@@ -85,7 +87,7 @@ def create_env_with_light():
 
     return env, cam
 
-def create_predefined_env(scene_id=3):
+def create_predefined_env(scene_id=3, load_categories=None):
     scenes = get_available_og_scenes()
     scene_type = "InteractiveTraversableScene"
     scene_model = list(scenes)[scene_id]
@@ -95,9 +97,11 @@ def create_predefined_env(scene_id=3):
         "scene": {
             "type": scene_type,
             "scene_model": scene_model,
-            "load_object_categories": ["floors", "walls", "top_cabinet", "countertop", "breakfast_table", "bottom_cabinet", "fridge", "microwave", "picture"], 
+            # "load_object_categories": ["floors", "walls", "ceilings", "top_cabinet", "countertop", "breakfast_table", "bottom_cabinet", "fridge", "microwave", "picture"], 
         },
     }
+    if load_categories is not None:
+        cfg["scene"]["load_object_categories"] = ["floors", "walls", "ceilings"]+load_categories
     env = og.Environment(cfg)
     for _ in range(30): env.step([])
 
@@ -112,24 +116,51 @@ def create_predefined_env(scene_id=3):
     cam.initialize()
     # Allow camera teleoperation
     og.sim.enable_viewer_camera_teleoperation()
+    cam.set_position([3, 3, 5])
 
-    return env, cam
+    cam_light = LightObject(prim_path="/World/mylight", 
+                          name="mylight", 
+                          light_type="Disk", 
+                          radius=0.03, 
+                          intensity=1e7)
+
+    return env, cam, cam_light
 
 
-def sample_cam_pose(yaw_low=-np.pi, yaw_high=0, dist_low=2.5, dist_high=4.5, pitch_low=-np.pi/4, pitch_high=np.pi/16):
+def sample_cam_pose(yaw_low=-np.pi, yaw_high=np.pi, dist_low=2.5, dist_high=4.5, pitch_low=-np.pi/4, pitch_high=np.pi/16, obj=None):
     '''
     Helper function to saple a random camera pose.
     Later used to let cam focus on given object.
+    
+    obj: the DatasetObject to make camera focusing on. Note we still just return the camera pose.
+    If passed in, will use the orientation of the obj to make sure camera is in the front side.
     '''
-    camera_yaw = np.random.uniform(yaw_low, yaw_high)
-    # camera_yaw = clipped_normal_sample(yaw_low, yaw_high)
+    if obj is None:
+        camera_yaw = np.random.uniform(yaw_low, yaw_high)
+        # camera_yaw = clipped_normal_sample(yaw_low, yaw_high)
+    else:
+        camera_yaw = compute_obj_x_pos_angle(obj) # let camera face obj for debugging
+        camera_yaw = np.random.uniform(camera_yaw - np.pi/8, camera_yaw + np.pi/8)
+    
     camera_dist = np.random.uniform(dist_low, dist_high)
-    # camera_pitch = np.random.uniform(low=pitch_low, high=pitch_high)
-    camera_pitch = clipped_normal_sample(pitch_low, pitch_high)
+    camera_pitch = np.random.uniform(low=pitch_low, high=pitch_high)
+    # camera_pitch = clipped_normal_sample(pitch_low, pitch_high)
     target_to_camera = R.from_euler("yz", [camera_pitch, camera_yaw]).apply([1, 0, 0])
     raw_camera_pos = target_to_camera * camera_dist
 
     return (raw_camera_pos, camera_yaw)
+
+def compute_obj_x_pos_angle(obj):
+    orn = obj.get_orientation()
+    mat = T.quat2mat(orn)
+    forward_vec = -mat[:, 1]
+    return np.pi * 2 - compute_angle_between_vectors(forward_vec, np.array([1, 0, 0]))
+
+
+def compute_angle_between_vectors(vector_a, vector_b):
+    cos_angle = np.dot(vector_a, vector_b) / (np.linalg.norm(vector_a) * np.linalg.norm(vector_b))
+    angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+    return angle
 
 def clipped_normal_sample(low, high):
     '''
@@ -174,9 +205,8 @@ def basic_objects():
     cab0 = DatasetObject(
         prim_path=f"/World/{cab0_name}",
         name=cab0_name,
-        category="bottom_cabinet",
-        # model="lwjdmj",
-        model="ujniob",
+        category="top_cabinet",
+        model="dmwxyl",
     )
 
     cab1_name = f"cab_{1}"
@@ -184,7 +214,7 @@ def basic_objects():
         prim_path=f"/World/{cab1_name}",
         name=cab1_name,
         category="bottom_cabinet",
-        model="ybntlp",
+        model="bamfsz",
     )
 
     cupcake_name = "cake"
@@ -215,17 +245,18 @@ def basic_objects():
         prim_path="/World/table",
         name="breakfast_table",
         category="breakfast_table", 
-        model="19203"
+        model="bmnubh"
     )
 
     shirt = DatasetObject(
         prim_path="/World/shirt",
         name="shirt",
-        category="t-shirt", 
-        model="t-shirt_000", 
+        category="t_shirt", 
+        model="kvidcx", 
         prim_type=PrimType.CLOTH, 
         abilities={"foldable": {}, "unfoldable": {}},
-        scale=0.05,
+        # scale=0.05,
+        fit_avg_dim_volume=True,
         position=[0, 0, 0.5],
         orientation=[0.7071, 0., 0.7071, 0.],
     )
@@ -240,4 +271,27 @@ def basic_objects():
         position=[0, 0, 0.5],
     )
 
-    return cab0, cab1, cupcake, laptop, table, shirt, carpet
+    apple = DatasetObject(
+        prim_path="/World/apple",
+        name="apple",
+        category="apple", 
+        model="agveuv", 
+        scale=1.5,
+    )
+
+    knife = DatasetObject(
+        prim_path="/World/knife",
+        name="knife",
+        category="table_knife",
+        model="lrdmpf",
+        scale=2.5,
+        position=[0, 0, 10.0],
+    )
+
+    return cab0, cab1, cupcake, laptop, table, shirt, carpet, apple, knife
+
+
+if __name__ == '__main__':
+    print("here")
+    embed()
+    

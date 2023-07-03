@@ -102,7 +102,7 @@ def save_obs(prefix, is_open, info, fpath="collected_data/small_sample/", cam=No
     info[prefix] = {"bbox_loose":(left_corner_loose, span_loose), "is_open":is_open}
     return info
 
-def save_link_level_obs(obj, obj_id, opened_links, prefix, info, fpath="collected_data/small_sample/", cam=None):
+def save_link_level_obs(obj, obj_id, opened_links, link_prismatic, prefix, info, fpath="collected_data/small_sample/", cam=None):
     '''
     Helper function to save current obs to fig
     obj: DatasetObject -- TODO: extend for multiple objects
@@ -135,7 +135,7 @@ def save_link_level_obs(obj, obj_id, opened_links, prefix, info, fpath="collecte
     # TODO: check visibility here
     min_ratio = check_visible(obs["seg_instance"], obj_id, bbox_obs)
     print(prefix, min_ratio)
-    if min_ratio < 0.2:
+    if min_ratio < 0.3:
         og.log.info("Not all links properly visible, skipping")
         return info
 
@@ -162,9 +162,12 @@ def save_link_level_obs(obj, obj_id, opened_links, prefix, info, fpath="collecte
         info[prefix][key]["bbox"] = link_bboxes[key] # bbox in corner-extent format
         if key in ["object", "base_link"]:
             is_open = None
+            is_prismatic = None
         else:
             is_open = key in opened_links
+            is_prismatic = link_prismatic[key]
         info[prefix][key]["is_open"] = is_open
+        info[prefix][key]["is_prismatic"] = is_prismatic
     
     return info
 
@@ -188,11 +191,12 @@ def generate(scene_id=0, fpath="collected_data/pipeline_test/"):
     cab_objects = og.sim.scene.object_registry("category", "bottom_cabinet")
     train_objects += list(cab_objects) if cab_objects is not None else []
 
-    ceiling_objects = og.sim.scene.object_registry("category", "ceilings")
-    ceiling_objects = list(ceiling_objects) if ceiling_objects is not None else []
-    for ceiling in ceiling_objects:
-        og.sim.scene.remove_object(ceiling)
-    for _ in range(50): og.sim.step()
+    # keep ceiling
+    # ceiling_objects = og.sim.scene.object_registry("category", "ceilings")
+    # ceiling_objects = list(ceiling_objects) if ceiling_objects is not None else []
+    # for ceiling in ceiling_objects:
+    #     og.sim.scene.remove_object(ceiling)
+    # for _ in range(50): og.sim.step()
 
     instance_map = sem_api.get_instance_mapping()
 
@@ -212,26 +216,27 @@ def generate(scene_id=0, fpath="collected_data/pipeline_test/"):
         obj_id = instance_map[f"/World/{obj.name}"]
 
         # 0421 Temporarily skip all prismatic joints
-        has_prismatic_joint = False
-        has_revolute_joint = False
+        prismatic_links = []
+        revolute_links = []
         for joint_name in obj.joints:
             if "Prismatic" in obj.joints[joint_name].joint_type:
-                has_prismatic_joint = True
+                prismatic_links.append(obj.joints[joint_name].child_name)
             else:
-                has_revolute_joint = True
+                revolute_links.append(obj.joints[joint_name].child_name)
 
-        if has_prismatic_joint:
-            og.log.info(f"object {obj.name} has prismatic joints, skipping")
-            continue
+        link_prismatic = {}
+        for link_name in prismatic_links: link_prismatic[link_name] = True
+        for link_name in revolute_links: link_prismatic[link_name] = False
         
-        # itr_open = 6
-        # itr_close = 3
+        itr_open = 6
+        itr_close = 3
         itr_open = 1
         itr_close = 1
 
         # keep track of visible ratio to find best angle for object
         best_yaw = -np.pi
         best_visible = 0
+        good_yaw = []
 
         # repeate several samples
         for itr in range(itr_open + itr_close):
@@ -257,15 +262,18 @@ def generate(scene_id=0, fpath="collected_data/pipeline_test/"):
 
             num_cam_pose = 22
             yaws = np.linspace(-np.pi, np.pi, 19)
+            if itr %3 == 0: good_yaw = []
             
             for p in range(num_cam_pose):
                 # rotate around object
-                if p < 18 and itr == 0:
+                if p < 18 and itr % 3 == 0:
                     cam_pos, cam_yaw = sample_cam_pose(dist_low=1.5, dist_high=1.5, yaw_low=yaws[p], yaw_high=yaws[p+1])
-                    cam_pos += obj.get_position()
+                elif p < 17:
+                    cam_pos, cam_yaw = sample_cam_pose(dist_low=1, dist_high=3, yaw_low=best_yaw-np.pi/6, yaw_high=best_yaw+np.pi/6)
                 else:
-                    cam_pos, _ = sample_cam_pose(dist_low=1, dist_high=3, yaw_low=best_yaw-np.pi/6, yaw_high=best_yaw+np.pi/6)
-                    cam_pos += obj.get_position()
+                    cam_pos, cam_yaw = sample_cam_pose(dist_low=1, dist_high=3, yaw_low=best_yaw-np.pi, yaw_high=best_yaw+np.pi)
+                
+                cam_pos += obj.get_position()
 
                 set_camera_view(cam_pos, obj.get_position(), camera_prim_path="/World/viewer_camera", viewport_api=None)
                 for _ in range(30): og.sim.render()
@@ -277,13 +285,19 @@ def generate(scene_id=0, fpath="collected_data/pipeline_test/"):
                     opened_links = ''.join([link.name for link in links])
                 else:
                     opened_links = ''
-                info = save_link_level_obs(obj, obj_id, opened_links, prefix, info, fpath, cam)
+                info = save_link_level_obs(obj, obj_id, opened_links, link_prismatic, prefix, info, fpath, cam)
+                # if prefix in info:
+                #     info[prefix]["link_is_prismatic"] = link_prismatic
 
                 # help find the best camera yaw 
                 if p < 18:
-                    if prefix in info and best_visible - 0.05 < info[prefix]["min_link_visible_ratio"]:
+                    if prefix in info and best_visible < info[prefix]["min_link_visible_ratio"]:
                         best_visible = info[prefix]["min_link_visible_ratio"]
                         best_yaw = cam_yaw
+                        if best_visible > 0.5:
+                            good_yaw.append(cam_yaw)
+                if itr%3 !=0 and len(good_yaw) > 0 and (prefix not in info or np.random.random()<0.1): # bad angle, sample one
+                    best_yaw = good_yaw[np.random.choice(range(len(good_yaw)), size=1)[0]]
 
                 count += 1
             
@@ -300,5 +314,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     generate(scene_id = args.scene_id,
-             fpath=f"collected_data/0421_rev_only_train/scene_{args.scene_id}/"
+             fpath=f"collected_data/0512_open/scene_{args.scene_id}/"
              )

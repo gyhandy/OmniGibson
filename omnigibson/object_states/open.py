@@ -128,7 +128,7 @@ class Open(AbsoluteObjectState, BooleanState):
         # Check the metadata info to get relevant joints information
         self.relevant_joints_info = _get_relevant_joints(self.obj)
 
-    def _get_value(self):
+    def _get_value(self, return_link_info=False):
         both_sides, relevant_joints, joint_directions = self.relevant_joints_info
         if not relevant_joints:
             return False
@@ -159,9 +159,10 @@ class Open(AbsoluteObjectState, BooleanState):
         # The object is open only if it's open from all of its sides.
         return all(sides_openness)
 
-    def _set_value(self, new_value, fully=False):
+    def _set_value(self, new_value, fully=False, one_link=False):
         """
         Set the openness state, either to a random joint position satisfying the new value, or fully open/closed.
+        Yihe: one_link -- Bool, if only open one link at a time
 
         @param new_value: bool value for the openness state of the object.
         @param fully: whether the object should be fully opened/closed (e.g. all relevant joints to 0/1).
@@ -184,16 +185,17 @@ class Open(AbsoluteObjectState, BooleanState):
 
             # All joints are relevant if we are closing, but if we are opening let's sample a subset.
             # if new_value:
-            if new_value and not fully:
-                # num_to_open = random.randint(1, len(relevant_joints))
-                # relevant_joints = random.sample(relevant_joints, num_to_open)
+            if new_value:
+                if one_link:
+                    num_to_open = 1
+                elif not fully:
+                    num_to_open = np.random.randint(1, len(relevant_joints)+1)
+                else:
+                    num_to_open = len(relevant_joints)
 
-                num_to_open = np.random.randint(1, len(relevant_joints)+1)
-                # num_to_open = len(relevant_joints) # 0404 temporary hack for link bbox debugging
                 print(f"Open {num_to_open} joints out of {len(relevant_joints)}")
-                # relevant_joints = random.sample(relevant_joints, num_to_open)
                 relevant_joints = np.random.choice(relevant_joints, size=num_to_open, replace=False)
-            
+
             # Go through the relevant joints & set random positions.
             for joint, joint_direction in zip(relevant_joints, joint_directions):
                 threshold, open_end, closed_end = _compute_joint_threshold(joint, joint_direction * side)
@@ -211,9 +213,11 @@ class Open(AbsoluteObjectState, BooleanState):
                     low = min(joint_range)
                     high = max(joint_range)
 
+                    low = (low + high) / 2
+
                     # Sample a position.
                     joint_pos = np.random.uniform(low, high)
-                    # joint_pos = (low+high)/2 # 0404 temporary hack for link bbox debug
+                    # joint_pos = joint_range[1] # 0420 Hack to fully open
 
                 # Save sampled position.
                 joint.set_pos(joint_pos)

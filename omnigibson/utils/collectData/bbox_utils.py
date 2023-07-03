@@ -71,6 +71,7 @@ def pts_to_bbox(pts, cam, intrinsics):
     x_max, y_max = np.max(pixels, axis=0)
 
     return np.array([x_min, y_min, x_max, y_max])
+    return pixels # 0523 for debugging
 
 
 def compute_intrinsics(cam, img_width):
@@ -148,7 +149,6 @@ def plot_pixels(pixels, obs, all=True):
 
     return bbox_obs
 
-
 def add_bboxes_to_obs(bbox_obs, ref, bboxes):
     '''
     bbox_obs: the current bbox obs to modify, assume uniqueID in increaing order
@@ -175,6 +175,7 @@ def get_all_link_3d_bboxes(obj):
     all_3d_bboxes = {}
 
     for link_name in link_names:
+        ##### 0513 try oriented bbox ####
         center, orientation, extent, _ = obj.get_base_aligned_bbox(link_name=link_name, visual=True, xy_aligned=True, fallback_to_aabb=False, link_bbox_type="axis_aligned")
         pts = center_extent_to_xy_minmax_3d(center, extent, orientation)
         all_3d_bboxes[link_name] = pts
@@ -239,7 +240,7 @@ def get_all_bboxes(obj, cam, bbox_obs=None, img_fpath=None):
 
     if len(bbox_obs) == 0:
         og.log.info("No bbox obs, skipped")
-        return None
+        return None, None
     
     ref = bbox_obs[0]
     bbox_obs = add_bboxes_to_obs(bbox_obs, ref, list(link_bboxes.values()))
@@ -302,7 +303,7 @@ def xy_minmax_to_center_extend_2d(orig):
     return ((int(orig[0]), int(orig[1])),(int(orig[2]-orig[0]), int(orig[3]-orig[1])))
 
 
-def plot_bbox_on_rgb(bboxes, rgb, fpath, is_minmax=True):
+def plot_bbox_on_rgb(bboxes, rgb, fpath, is_minmax=True, plot_3d=False):
     # This method is written for the new form of bbox observation
     # ('semanticId', '<u4'), ('x_min', '<i4'), ('y_min', '<i4'), ('x_max', '<i4'), ('y_max', '<i4'), ('occlusionRatio', '<f4')
     # if is_minmax is False, indicating original position for x_max, y_max now have x_extent, y_extent
@@ -317,17 +318,34 @@ def plot_bbox_on_rgb(bboxes, rgb, fpath, is_minmax=True):
     i = 0
     colors = ["red", "blue", "yellow", "green", "black", "purple", "gray"]
     for bbox in bboxes:
-        (x_min, y_min) = (bbox[1], bbox[2])
-        if is_minmax:
-            x_extent, y_extent = bbox[3]-bbox[1], bbox[4]-bbox[2]
-        else:
-            x_extent, y_extent = bbox[3], bbox[4]
-        rect = patches.Rectangle((x_min, y_min), x_extent, y_extent, linewidth=1, edgecolor=colors[i], facecolor='none')
-        i+=1
-        i = i % len(colors)
+        if plot_3d:
+            corner_pairs = [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # bottom face edges
+            (4, 5), (5, 6), (6, 7), (7, 4),  # top face edges
+            (0, 4), (1, 5), (2, 6), (3, 7),   # vertical edges
+            # (0, 3), (0, 4), (3, 7), (4, 7)
+            ]
 
-        # Add the rectangle to the axes
-        ax.add_patch(rect)
+            # plot each edge
+            # for line in lines:
+            #     ax.plot(*zip(*[bbox[i] for i in line]), color='r')
+            for pair in corner_pairs:
+                ax.plot([bbox[pair[0]][0], bbox[pair[1]][0]], [bbox[pair[0]][1], bbox[pair[1]][1]], "r-")
+            
+            plt.show()
+        
+        else:
+            (x_min, y_min) = (bbox[1], bbox[2])
+            if is_minmax:
+                x_extent, y_extent = bbox[3]-bbox[1], bbox[4]-bbox[2]
+            else:
+                x_extent, y_extent = bbox[3], bbox[4]
+            rect = patches.Rectangle((x_min, y_min), x_extent, y_extent, linewidth=1, edgecolor=colors[i], facecolor='none')
+            i+=1
+            i = i % len(colors)
+
+            # Add the rectangle to the axes
+            ax.add_patch(rect)
 
     # Save the figure to a PNG file
     plt.savefig(fpath)
@@ -341,11 +359,12 @@ if __name__ == '__main__':
     # #model="lwjdmj",##############
 
     env, cam = create_env_with_light()
-    cab0, cab1, cupcake, laptop, table, shirt, carpet = basic_objects()
-    train, test = get_all_available_by_category('bottom_cabinet', use_avg_spec=False)
+    ret = basic_objects()
+    cab1 = ret[1]
+    # train, test = get_all_available_by_category('bottom_cabinet', use_avg_spec=False)
 
     og.sim.stop()
-    og.sim.import_object(cab0)
+    og.sim.import_object(cab1)
     og.sim.play()
     for _ in range(30): og.sim.step()
 
