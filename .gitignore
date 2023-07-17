@@ -20,7 +20,6 @@ dev/transfer.c
 *.bak
 *.zip
 .*.swp
-*.json
 *.sh
 
 docs/apidoc

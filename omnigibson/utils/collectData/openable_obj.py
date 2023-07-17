@@ -3,7 +3,7 @@ from omnigibson.objects import DatasetObject
 from omnigibson.utils.asset_utils import (
     get_all_object_categories,
     get_og_avg_category_specs,
-    get_object_models_of_category,
+    get_all_object_category_models,
 )
 from IPython import embed
 from omnigibson import object_states
@@ -31,7 +31,7 @@ def get_all_available_by_category(category, is_train, use_avg_spec=None, unique_
     Notice: Does not handle invalid articulations
     use_avg_spec: if not pass in, will be set True unless category in NOT_USE_AVG_SPEC_CATEGORIES
     '''
-    all_models = get_object_models_of_category(category)
+    all_models = get_all_object_category_models(category)
     train = []
     test = []
     
@@ -106,9 +106,9 @@ def get_all_place_objects(is_train=True, unique_id = ""):
         size = max(metadata["size"])
         weight = metadata['mass']
 
-        if size < 0.3 and size > 0.05 and weight < 5:
+        if size < 0.5 and size > 0.1 and weight < 10:
             place_categories.append(cat)
-        if size < 0.3 and size > 0.05:
+        if size < 0.3 and size > 0.1:
             small_place_categories.append(cat)
 
     train_place_categories = place_categories[:int(0.7*len(place_categories))]
@@ -120,7 +120,7 @@ def get_all_place_objects(is_train=True, unique_id = ""):
         random.shuffle(test_place_categories)
         place_objects = get_objects_by_categories(test_place_categories, True, is_train, unique_id)
     random.shuffle(place_objects)
-    place_objects = place_objects[:20]
+    place_objects = place_objects[:7]
 
     return place_objects, small_place_categories
 
