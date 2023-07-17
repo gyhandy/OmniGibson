@@ -1,5 +1,6 @@
 import random
 import numpy as np
+import numpy as np
 
 from omnigibson.macros import create_module_macros
 from omnigibson.object_states.object_state_base import BooleanState, AbsoluteObjectState
@@ -182,6 +183,7 @@ class Open(AbsoluteObjectState, BooleanState):
 
         for _ in range(m.OPEN_SAMPLING_ATTEMPTS):
             side = np.random.choice(sides)
+            side = np.random.choice(sides)
 
             # All joints are relevant if we are closing, but if we are opening let's sample a subset.
             # if new_value:
@@ -225,8 +227,10 @@ class Open(AbsoluteObjectState, BooleanState):
             # If we succeeded, return now.
             if self._get_value() == new_value:
                 return True, relevant_joints
+                return True, relevant_joints
 
         # We exhausted our attempts and could not find a working sample.
+        return False, None
         return False, None
 
     # We don't need to load / save anything since the joints are saved elsewhere

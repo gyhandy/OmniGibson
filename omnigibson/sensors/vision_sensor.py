@@ -14,7 +14,10 @@ from omnigibson.utils.transform_utils import euler2quat, quat2euler
 import omni.ui
 import omni.replicator.core as rep
 from omni.isaac.core.utils.prims import get_prim_at_path
+import omni.replicator.core as rep
+from omni.isaac.core.utils.prims import get_prim_at_path
 from omni.isaac.core.utils.stage import get_current_stage
+from pxr import Gf, UsdGeom, UsdRender
 from pxr import Gf, UsdGeom, UsdRender
 from omni.kit.viewport.window import get_viewport_window_instances
 from omni.kit.viewport.utility import create_viewport_window
@@ -422,6 +425,7 @@ class VisionSensor(BaseSensor):
             gym.spaces.Box(low=0, high=MAX_VIEWER_SIZE, shape=(), dtype=int),  # y_min
             gym.spaces.Box(low=0, high=MAX_VIEWER_SIZE, shape=(), dtype=int),  # x_max
             gym.spaces.Box(low=0, high=MAX_VIEWER_SIZE, shape=(), dtype=int),  # y_max
+            gym.spaces.Box(low=0, high=1.0, shape=(), dtype=float),  # occlusion ratio
             gym.spaces.Box(low=0, high=1.0, shape=(), dtype=float),  # occlusion ratio
         )))
 
