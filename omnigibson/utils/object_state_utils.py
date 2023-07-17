@@ -165,10 +165,11 @@ def sample_kinematics(
                     refuse_downwards=True,
                     undo_cuboid_bottom_padding=True,
                     max_angle_with_z_axis=0.17,
-                    sample_link_name=objB.root_link_name,
+                    sample_link_name=objB.root_link_name, # only sample on top of root link
                     **params,
                 )
             elif predicate == "inside" and sample_link_name is not None:
+                # sample inside a spefic link
                 sampling_results = sampling_utils.sample_cuboid_on_object_symmetric_bimodal_distribution(
                     objB,
                     num_samples=1,

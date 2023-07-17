@@ -14,7 +14,7 @@ from omnigibson.utils.asset_utils import (
     get_available_g_scenes,
     get_all_object_categories,
     get_og_avg_category_specs,
-    get_object_models_of_category,
+    get_all_object_category_models,
 )
 from omnigibson import object_states
 from omnigibson.macros import gm
@@ -97,7 +97,7 @@ def create_predefined_env(scene_id=3, load_categories=None):
         "scene": {
             "type": scene_type,
             "scene_model": scene_model,
-            # "load_object_categories": ["floors", "walls", "ceilings", "top_cabinet", "countertop", "breakfast_table", "bottom_cabinet", "fridge", "microwave", "picture"], 
+            "load_object_categories": ["floors", "walls", "ceilings", "top_cabinet", "countertop", "breakfast_table", "bottom_cabinet", "fridge", "microwave", "picture"], 
         },
     }
     if load_categories is not None:

@@ -22,7 +22,7 @@ from omnigibson.utils.asset_utils import (
     get_available_og_scenes,
     get_all_object_categories,
     get_og_avg_category_specs,
-    get_object_models_of_category,
+    get_all_object_category_models,
 )
 from omnigibson import object_states
 from omnigibson.macros import gm
@@ -69,7 +69,8 @@ gm.ENABLE_GLOBAL_CONTACT_REPORTING = True
 # Collect pipeline global vars
 OPENABLE_CATEGORIES = ["bottom_cabinet", "top_cabinet", "bottom_cabinet_no_top"]
 UNDER_CATEGORIES = ["breakfast_table", "coffee_table", "console_table", "desk", "pedestal_table", "straight_chair"]
-ONTOP_CATEGORIES = ['armchair', "countertop","breakfast_table", "coffee_table", "console_table", "desk", "pedestal_table", "shelf", "straight_chair", "swivel_chair"]
+# ONTOP_CATEGORIES = ['armchair', "countertop","breakfast_table", "coffee_table", "console_table", "desk", "pedestal_table", "shelf", "straight_chair", "swivel_chair"]
+ONTOP_CATEGORIES = ["countertop","breakfast_table", "coffee_table", "console_table", "desk", "pedestal_table", "shelf", "straight_chair"]
 ORIENTED_CATEGORIES = ["bottom_cabinet", "top_cabinet", "bottom_cabinet_no_top", 'armchair', "shelf"]
 
 def randomize_obj_state(base_objects, place_objects, small_categories, 
@@ -122,7 +123,7 @@ def randomize_obj_state(base_objects, place_objects, small_categories,
             if place_obj.category not in small_categories:
                 # if OnTop not in place_states: continue
                 # cur_place_states = [OnTop]
-                if Inside in cur_place_states:
+                if Inside in cur_place_states: # don't put big objects inside
                     if len(cur_place_states) == 1: continue
                     else: cur_place_states.remove(Inside)
             place_state = np.random.choice(cur_place_states, 1)[0]
@@ -203,6 +204,7 @@ def save_obj_obs(base_obj, place_obj, opened_links, instance_map, prefix, fpath,
         }
 
         if obj.category in OPENABLE_CATEGORIES:
+            # 0704 TODO: original save_link_level_obs is lost, need to rewrite
             link_obs = save_link_level_obs(obj, obj_id, opened_links, prefix=prefix, fpath=fpath, cam=cam)
             if link_obs is None:
                 all_visible = False
@@ -212,12 +214,25 @@ def save_obj_obs(base_obj, place_obj, opened_links, instance_map, prefix, fpath,
             obj_obs[obj_name]["links"] = link_obs
         else:
             # TODO: check inserted object's obj_id, and write filtering method here
-            if np.sum(cam.get_obs()["seg_instance"]==obj_id) < 300:
+            if np.sum(cam.get_obs()["seg_instance"]==obj_id) < 2000:
                 # embed()
                 all_visible = False
     
     return obj_obs, all_visible, open_visible
 
+
+def randomize_bg_place_objects(base_obj, place_objects, small_categories, threshold=3):
+    '''
+    Randomly place the place_objects in some relationship to the base_object
+    '''
+    for place_obj in place_objects:
+        all_success = False
+        itr = 0
+        while not all_success and itr < threshold:
+            all_success, _, _, _ = randomize_obj_state(
+            base_objects=[base_obj], place_objects=[place_obj], small_categories=small_categories)
+            itr += 1
+            print(itr)
 
 def dump_json(info, fpath):
     with open(f"{fpath}info.json", 'w') as f:
@@ -225,11 +240,13 @@ def dump_json(info, fpath):
     f.close()
 
 ######################## MAIN GENERATION FUNCTION ######################
-def generate(scene_id=0, base_categories=["bottom_cabinet"], is_train=True, fpath="collected_data/pipeline_test/"):
+def generate(scene_id=0, base_categories=["bottom_cabinet"], is_train=True, fpath="collected_data/pipeline_test/", complex_bg=False):
     
     ########### Create Environment and Viewer Camera #########
+    # from IPython import embed; embed(); exit(0)
     # env, cam = create_env_with_light()
-    env, cam, cam_light = create_predefined_env(scene_id, load_categories=base_categories+['countertop',"fridge", "microwave", "picture"])
+    # env, cam, cam_light = create_predefined_env(scene_id, load_categories=base_categories+['countertop',"fridge", "microwave", "picture"])
+    env, cam, cam_light = create_predefined_env(scene_id, load_categories=base_categories)
     og.sim.stop()
     og.sim.import_object(cam_light)
     og.sim.play()
@@ -240,7 +257,8 @@ def generate(scene_id=0, base_categories=["bottom_cabinet"], is_train=True, fpat
     # place_objects = get_objects_by_categories(place_categories, use_avg_spec=True, is_train=is_train, unique_id="0")
     # base_objects = get_scene_objects_by_categories(base_categories)
     # base_objects = get_scene_objects_by_categories(OPENABLE_CATEGORIES)
-    base_objects = get_scene_objects_by_categories(["bottom_cabinet", "bottom_cabinet_no_top", "top_cabinet"])
+    # base_objects = get_scene_objects_by_categories(["bottom_cabinet", "bottom_cabinet_no_top", "top_cabinet"])
+    base_objects = get_scene_objects_by_categories(ONTOP_CATEGORIES + UNDER_CATEGORIES)
     print(len(base_objects))
 
     ########### Prepare Generation #####################
@@ -250,6 +268,9 @@ def generate(scene_id=0, base_categories=["bottom_cabinet"], is_train=True, fpat
         os.makedirs(fpath)
     if not os.path.exists(f"{fpath}/imgs/"):
         os.makedirs(f"{fpath}/imgs/")
+
+
+    from IPython import embed; embed(); exit(0)
 
     ########### Insert All Place Objects ###################
     # temporary solution to avoid segmentation id mismatch
@@ -270,19 +291,28 @@ def generate(scene_id=0, base_categories=["bottom_cabinet"], is_train=True, fpat
         for joint_name in base_obj.joints:
             if "Prismatic" in base_obj.joints[joint_name].joint_type:
                 is_prismatic = True
-        if not is_prismatic: # TODO remove 0531
-            og.log.info("not has prismatic joint, skipping for now")
-            continue
         
         opened_links = None
         place_state = None
         all_success = False
 
+        # shuffle place objects
+        np.random.shuffle(place_objects)
+
+        if complex_bg:
+            randomize_bg_place_objects(base_obj, place_objects[-2:], small_categories, threshold=3)
+                
         # insert place object
-        for place_obj in np.random.choice(place_objects, 15, replace=False):
+        # for place_obj in np.random.choice(place_objects, 5, replace=False):
+        # place all place objects except the last three
+        for place_obj in place_objects[:-2]:
             
             # skip place objects that we failed to insert
             if not place_obj: continue
+
+            # randomize bg place objects with a small probability
+            if complex_bg and np.random.rand() < 0.2:
+                randomize_bg_place_objects(base_obj, place_objects[-2:], small_categories, threshold=3)
 
             # sample a few random states
             sample_itr = 4
@@ -300,13 +330,13 @@ def generate(scene_id=0, base_categories=["bottom_cabinet"], is_train=True, fpat
                     og.log.info(f"Sampling object states failed, skipped")
                     continue
 
-                num_cam_pose = 4
+                num_cam_pose = 8
                 for _ in range(num_cam_pose):
                     ref_position = place_obj.get_position()
                     
                     if base_obj.get_position()[2] < 1.5:
-                        # pitch_low, pitch_high = -np.pi/4, -np.pi/8
-                        pitch_low, pitch_high = -np.pi*7/16, -np.pi/8 # 0531 for drawer inside
+                        pitch_low, pitch_high = -np.pi/4, -np.pi/8
+                        # pitch_low, pitch_high = -np.pi*7/16, -np.pi/8 # 0531 for drawer inside
                         ref_position[2] += 0.2
                     else:
                         pitch_low, pitch_high = -np.pi/8, np.pi/16
@@ -315,7 +345,7 @@ def generate(scene_id=0, base_categories=["bottom_cabinet"], is_train=True, fpat
                     if base_obj.category in ORIENTED_CATEGORIES: 
                         cam_pos = sample_cam_pose(dist_low=1, dist_high=2, pitch_low=pitch_low, pitch_high=pitch_high, obj=base_obj)[0] + place_obj.get_position()
                     else:
-                        cam_pos = sample_cam_pose(dist_low=1.5, dist_high=2.5, pitch_low=pitch_low, pitch_high=pitch_high)[0] + place_obj.get_position()
+                        cam_pos = sample_cam_pose(dist_low=1, dist_high=2, pitch_low=pitch_low, pitch_high=pitch_high)[0] + place_obj.get_position()
                     set_camera_view(cam_pos, ref_position, camera_prim_path="/World/viewer_camera", viewport_api=None)
                     for _ in range(30): og.sim.render()
 
@@ -355,6 +385,12 @@ def generate(scene_id=0, base_categories=["bottom_cabinet"], is_train=True, fpat
         if base_obj.category in OPENABLE_CATEGORIES:
             base_obj.states[Open].set_value(False)
             for _ in range(30): og.sim.step()
+
+        # set background place objects to far away
+        for place_obj in place_objects[-2:]:
+            place_obj.set_position([30+place_objects.index(place_obj), 0, 0])
+            for _ in range(20): og.sim.step()
+
         # for _ in range(20): og.sim.render()
         dump_json(info, fpath=fpath)
 
@@ -372,7 +408,8 @@ if __name__ == '__main__':
 
     generate(scene_id=args.scene_id, 
             # base_categories=list(set(OPENABLE_CATEGORIES+ONTOP_CATEGORIES+UNDER_CATEGORIES)), 
-            base_categories=list(set(OPENABLE_CATEGORIES)), 
-            fpath=f"collected_data/0531_Inside_Drawer_test/scene_{args.scene_id}/",
-            is_train=False)
+            base_categories=ONTOP_CATEGORIES, 
+            fpath=f"collected_data/0704_complex_bg_train/scene_{args.scene_id}/",
+            is_train=True,
+            complex_bg=True)
     # ['apple', 'bowl', 'peach','cup', 'hat']
