@@ -69,6 +69,12 @@ class TraversableMap(BaseMap):
         Returns:
             int: Size of the loaded map
         """
+        print("Loading map")
+        
+        # Yihe: customize maps_path
+        scene_name = maps_path.split("/")[-2]
+        maps_path = f"/svl/u/yihetang//og_dataset_new_scene/scenes/{scene_name}/layout"
+        # maps_path = f"/scr/OmniGibson/omnigibson/data/og_dataset_new_scene/scenes/{scene_name}/layout"
         if not os.path.exists(maps_path):
             log.warning("trav map does not exist: {}".format(maps_path))
             return
@@ -79,7 +85,8 @@ class TraversableMap(BaseMap):
         for floor in range(len(self.floor_heights)):
             if self.trav_map_with_objects:
                 # TODO: Shouldn't this be generated dynamically?
-                trav_map = np.array(Image.open(os.path.join(maps_path, "floor_trav_{}.png".format(floor))))
+                # trav_map = np.array(Image.open(os.path.join(maps_path, "floor_trav_{}.png".format(floor))))
+                trav_map = np.array(Image.open(os.path.join(maps_path, "floor_trav_no_door_{}.png".format(floor))))
             else:
                 trav_map = np.array(Image.open(os.path.join(maps_path, "floor_trav_no_obj_{}.png".format(floor))))
 
